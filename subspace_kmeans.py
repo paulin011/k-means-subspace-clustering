@@ -29,35 +29,14 @@ Full run:  nohup python3 subspace_kmeans.py > subspace_run.log 2>&1 &
 """
 
 import argparse
-import hashlib
-import json
 import os
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import torch
 
-N_FILES_TOTAL = 13021
-N_CELLS = 12288
-DIM = 2048
-
-
-def sample_fingerprint(files, tokens_per_file, seed):
-    """Stable short hash identifying the exact token sample (for run comparison)."""
-    h = hashlib.sha1()
-    h.update(f"{tokens_per_file}|{seed}|".encode())
-    h.update(",".join(map(str, sorted(files))).encode())
-    return h.hexdigest()[:12]
-
-
-def load_file_list(path):
-    """Read a sampled-file list from a previous run's sample.json or model.pt."""
-    if path.endswith(".json"):
-        with open(path) as f:
-            return list(json.load(f)["files"])
-    obj = torch.load(path, map_location="cpu", weights_only=False)
-    return list(obj["sampled_files"])
+from cluster_io import (DIM, N_CELLS, N_FILES_TOTAL, load_tokens,
+                        sample_fingerprint, save_assignments, save_model)
 
 
 def parse_args():
@@ -81,69 +60,6 @@ def parse_args():
     p.add_argument("--load-workers", type=int, default=16, help="parallel file-loading threads")
     p.add_argument("--max-ram-gb", type=float, default=350.0, help="abort if sampled tokens exceed this")
     return p.parse_args()
-
-
-def load_tokens(args):
-    """Sample files, load them in parallel, return (data fp16 [T, DIM], file_ids, cell_ids)."""
-    tpf = min(args.tokens_per_file, N_CELLS)
-    if args.files_from:
-        sampled = load_file_list(args.files_from)
-        print(f"Reusing {len(sampled)} files from {args.files_from} "
-              f"(--num-files ignored)", flush=True)
-    else:
-        g = torch.Generator().manual_seed(args.seed)
-        n_files = min(args.num_files, N_FILES_TOTAL)
-        sampled = torch.randperm(N_FILES_TOTAL, generator=g)[:n_files].tolist()
-    n_files = len(sampled)
-
-    fp = sample_fingerprint(sampled, tpf, args.seed)
-    os.makedirs(args.out, exist_ok=True)
-    with open(os.path.join(args.out, "sample.json"), "w") as f:
-        # files kept in load order so --files-from reproduces the run exactly
-        # (init seeds depend on order); the fingerprint sorts internally.
-        json.dump({"fingerprint": fp, "num_files": n_files, "tokens_per_file": tpf,
-                   "seed": args.seed, "src": args.src, "files": list(sampled)}, f)
-
-    T = n_files * tpf
-    ram_gb = T * DIM * 2 / 1e9
-    print(f"Sampling {n_files} files x {tpf} tokens = {T:,} tokens "
-          f"({ram_gb:.1f} GB fp16 in RAM) | sample fingerprint {fp}", flush=True)
-    if ram_gb > args.max_ram_gb:
-        raise SystemExit(f"Would need {ram_gb:.0f} GB > --max-ram-gb={args.max_ram_gb}; "
-                         f"reduce --num-files or --tokens-per-file.")
-
-    data = torch.empty(T, DIM, dtype=torch.float16)
-    file_ids = torch.empty(T, dtype=torch.int32)
-    cell_ids = torch.empty(T, dtype=torch.int32)
-
-    def load_one(pos, fid):
-        d = torch.load(os.path.join(args.src, f"latent_{fid}.pt"),
-                       map_location="cpu", weights_only=False)
-        lat = d["latent"]
-        if lat.dim() == 3:
-            lat = lat.squeeze(0)
-        if lat.shape != (N_CELLS, DIM):
-            raise ValueError(f"latent_{fid}.pt has shape {tuple(lat.shape)}")
-        if tpf < N_CELLS:
-            gg = torch.Generator().manual_seed(args.seed * 1_000_003 + fid)
-            rows = torch.randperm(N_CELLS, generator=gg)[:tpf]
-            lat = lat[rows]
-        else:
-            rows = torch.arange(N_CELLS)
-        o = pos * tpf
-        data[o:o + tpf] = lat.to(torch.float16)
-        cell_ids[o:o + tpf] = rows.to(torch.int32)
-        file_ids[o:o + tpf] = fid
-
-    t0 = time.time()
-    with ThreadPoolExecutor(max_workers=args.load_workers) as ex:
-        futs = [ex.submit(load_one, pos, fid) for pos, fid in enumerate(sampled)]
-        for n, f in enumerate(as_completed(futs), 1):
-            f.result()
-            if n % 100 == 0 or n == n_files:
-                el = time.time() - t0
-                print(f"  loaded {n}/{n_files} files ({n / el:.1f} files/s)", flush=True)
-    return data, file_ids, cell_ids, sampled
 
 
 def sweep_worker(rank, device, data, labels, chunks, model, K, d, affine,
@@ -233,8 +149,11 @@ def update_model(moments, data, K, d, affine, seed_gen, device):
         C = C - means.unsqueeze(-1) * means.unsqueeze(1)
     trace = C.diagonal(dim1=-2, dim2=-1).sum(-1)
     evals, evecs = torch.linalg.eigh(C)                  # ascending
-    U = evecs[..., -d:].flip(-1).contiguous()            # [K, DIM, d], descending
-    eigvals = evals[..., -d:].flip(-1).clamp_min(0)
+    # NB: slice by DIM-d rather than -d, since Python's `-0` means 0 (the whole
+    # array), not "nothing" -- which would silently break the d=0 (point-cluster /
+    # k-means) case.
+    U = evecs[..., DIM - d:].flip(-1).contiguous()       # [K, DIM, d], descending
+    eigvals = evals[..., DIM - d:].flip(-1).clamp_min(0)
 
     # Re-seed clusters too small to support a d-dim basis: mean = random token,
     # zero basis, so the next assignment captures that token's neighbourhood.
@@ -303,13 +222,12 @@ def main():
                                 accumulate=False, chunk_size=args.chunk_size)
     print(f"final: obj/token={obj / T:.4f}  changed={changed / T:.4%}", flush=True)
 
-    evr = model["eigvals"].sum(1) / model["trace"].clamp(min=1e-12)
     fp = sample_fingerprint(sampled, min(args.tokens_per_file, N_CELLS), args.seed)
-    torch.save({**model, "explained_var_ratio": evr, "config": vars(args),
-                "history": history, "sampled_files": sampled, "sample_fingerprint": fp},
-               os.path.join(args.out, "model.pt"))
-    torch.save({"file_id": file_ids, "cell_id": cell_ids, "label": labels},
-               os.path.join(args.out, "assignments.pt"))
+    config = {**vars(args), "method": "subspace_kmeans"}
+    save_model(args.out, **model, config=config, history=history,
+               sampled_files=sampled, sample_fingerprint=fp)
+    save_assignments(args.out, file_id=file_ids, cell_id=cell_ids, label=labels)
+    evr = model["eigvals"].sum(1) / model["trace"].clamp(min=1e-12) if d > 0 else torch.zeros(K)
     print(f"Saved model.pt + assignments.pt to {args.out}/")
     print(f"Explained variance ratio (top-{d}): min={evr.min():.3f} "
           f"median={evr.median():.3f} max={evr.max():.3f}")

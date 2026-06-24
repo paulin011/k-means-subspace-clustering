@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
-"""Analyze K-subspaces clustering output and write a self-contained Markdown report.
+"""Analyze clustering output and write a self-contained Markdown report.
 
-Reads model.pt + assignments.pt produced by subspace_kmeans.py and reports:
+Algorithm-agnostic: reads any model.pt + assignments.pt following the shared schema
+in cluster_io.py (produced by subspace_kmeans.py, or by k-means/k-center, which are the
+d=0 "point cluster" case -- no subspace basis, just a centroid). Reports:
   - run configuration and convergence history
   - global variance decomposition (between-cluster / within-cluster / residual)
-  - per-cluster table: size, explained variance, effective dimensionality,
-    spatial concentration over HEALPix cells, temporal coverage/variation
-  - subspace affinity between clusters (mean squared cosine of principal
-    angles) -- high-affinity pairs indicate clusters that could be merged
+  - per-cluster table: size, spatial concentration over HEALPix cells, temporal
+    coverage/variation, plus (when d>0) explained variance / effective dimensionality,
+    and (when present) k-center's radius -- the max distance from centroid to any
+    member, its native minimax objective (distinct from `trace`, the mean squared
+    distance that k-means/subspace_kmeans optimize)
+  - subspace affinity between clusters (d>0 only): mean squared cosine of principal
+    angles -- high-affinity pairs indicate clusters that could be merged
   - temporal profiles of the most time-varying clusters
   - a Mollweide world map (dominant_cluster_map.png) of the dominant cluster per
     cell under NESTED ordering (confirmed: coherent continent-scale regions under
@@ -16,7 +21,7 @@ Reads model.pt + assignments.pt produced by subspace_kmeans.py and reports:
 All tabular spatial statistics are ordering-independent.
 
 Usage:
-  python3 analyze_subspaces.py --dir subspace_out --out report.md
+  python3 analyze_clusters.py --dir subspace_out --out report.md
 """
 
 import argparse
@@ -85,20 +90,26 @@ def healpix_nest2ring(nside, p):
     return n_before + jp - 1
 
 
-def affinity_ordered_colors(U):
-    """Color clusters so subspace-similar ones get similar colors.
+def affinity_ordered_colors(U, means):
+    """Color clusters so similar ones get similar colors.
 
-    Builds the K×K subspace-affinity matrix (mean squared principal-angle cosine),
-    orders clusters along the Fiedler vector of its normalized graph Laplacian (the
-    classic 1-D spectral seriation that places similar items adjacent), and maps that
-    order through the smooth perceptual `turbo` colormap. With this coloring genuine
-    spatial structure shows up as smooth gradients; only true salt-and-pepper noise
-    stays speckled — so the map's legibility no longer rides on a random hue shuffle.
+    Builds a K×K affinity matrix -- subspace affinity (mean squared principal-angle
+    cosine) when a basis exists (d>0), or centroid cosine similarity as a fallback for
+    point clusters (d=0, e.g. k-means/k-center) -- orders clusters along the Fiedler
+    vector of its normalized graph Laplacian (the classic 1-D spectral seriation that
+    places similar items adjacent), and maps that order through the smooth perceptual
+    `turbo` colormap. With this coloring genuine spatial structure shows up as smooth
+    gradients; only true salt-and-pepper noise stays speckled -- so the map's legibility
+    no longer rides on a random hue shuffle.
     """
     import matplotlib.pyplot as plt
     K, D, d = U.shape
-    Ucat = U.permute(1, 0, 2).reshape(D, K * d)
-    A = ((Ucat.T @ Ucat).view(K, d, K, d) ** 2).sum((1, 3)).numpy() / d
+    if d > 0:
+        Ucat = U.permute(1, 0, 2).reshape(D, K * d)
+        A = ((Ucat.T @ Ucat).view(K, d, K, d) ** 2).sum((1, 3)).numpy() / d
+    else:
+        mu_n = means / means.norm(dim=1, keepdim=True).clamp(min=1e-12)
+        A = (mu_n @ mu_n.T).numpy()
     np.fill_diagonal(A, 0.0)
     deg = A.sum(1)
     dinv = 1.0 / np.sqrt(np.maximum(deg, 1e-12))
@@ -156,11 +167,16 @@ def main():
     T = lab.numel()
     w = cnt / cnt.sum()
 
+    method = cfg.get("method", "subspace_kmeans")
     L = []
     add = L.append
-    add(f"# Subspace clustering report — `{args.dir}`")
-    add(f"\n*Generated {time.strftime('%Y-%m-%d %H:%M')} by `analyze_subspaces.py`. "
-        f"K={K} affine subspaces of dim {d} in {D}-dim token space, {T:,} tokens.*")
+    add(f"# Clustering report ({method}) — `{args.dir}`")
+    if d > 0:
+        add(f"\n*Generated {time.strftime('%Y-%m-%d %H:%M')} by `analyze_clusters.py`. "
+            f"K={K} affine subspaces of dim {d} in {D}-dim token space, {T:,} tokens.*")
+    else:
+        add(f"\n*Generated {time.strftime('%Y-%m-%d %H:%M')} by `analyze_clusters.py`. "
+            f"K={K} point clusters in {D}-dim token space, {T:,} tokens.*")
 
     add("\n## Configuration\n")
     add("| parameter | value |")
@@ -193,10 +209,11 @@ def main():
         f"clustered on the identical token set and are directly comparable.")
     add(f"- **Files:** {len(sampled_files)} latent files, "
         f"{cfg.get('tokens_per_file', N_CELLS)} tokens each, seed {cfg.get('seed', 0)}.")
-    add(f"- **Reproduce this exact sample** for a new run (e.g. to vary K or d):\n")
-    add(f"  ```bash\n  python3 subspace_kmeans.py --files-from {args.dir}/sample.json "
+    add(f"- **Reproduce this exact sample** for a new run, with this or any other "
+        f"`cluster_io.py`-based script (e.g. to vary K, d, or the algorithm itself):\n")
+    add(f"  ```bash\n  python3 {method}.py --files-from {args.dir}/sample.json "
         f"--seed {cfg.get('seed', 0)} --tokens-per-file {cfg.get('tokens_per_file', N_CELLS)} \\\n"
-        f"      --clusters <K> --dim <d> --out <new_dir>\n  ```")
+        f"      --clusters <K> --out <new_dir>\n  ```")
     if sampled_files:
         preview = ", ".join(map(str, sorted(sampled_files)[:20]))
         add(f"- File ids (first 20 of {len(sampled_files)}, full list in "
@@ -215,19 +232,23 @@ def main():
     between = float((w * ((means - mu_g) ** 2).sum(1)).sum())
     within = float((w * tr).sum())
     total = between + within
-    captured = float((w * eig.sum(1)).sum())
+    captured = float((w * eig.sum(1)).sum()) if d > 0 else 0.0
     resid = within - captured
     add(f"Total token variance E‖x−μ_global‖² = **{total:.0f}**, split into:\n")
     add(f"- **{between / total:.1%}** between clusters (the means alone — how much "
         f"cluster identity explains)")
-    add(f"- **{captured / total:.1%}** within clusters, captured by the top-{d} subspace directions")
-    add(f"- **{resid / total:.1%}** residual (unexplained by the model)")
-    frac = eig.cumsum(1) / eig.sum(1, keepdim=True).clamp(min=1e-12)
-    d80 = (frac < 0.8).sum(1) + 1
-    add(f"\nCount-weighted within-cluster EVR(top-{d}): **{float((w * evr).sum()):.3f}**. "
-        f"Dimensions needed for 80% of captured variance: "
-        f"min {int(d80.min())} / median {int(d80.median())} / max {int(d80.max())} "
-        f"(close to {d} ⇒ flat spectrum, consider larger --dim).")
+    if d > 0:
+        add(f"- **{captured / total:.1%}** within clusters, captured by the top-{d} subspace directions")
+        add(f"- **{resid / total:.1%}** residual (unexplained by the model)")
+        frac = eig.cumsum(1) / eig.sum(1, keepdim=True).clamp(min=1e-12)
+        d80 = (frac < 0.8).sum(1) + 1
+        add(f"\nCount-weighted within-cluster EVR(top-{d}): **{float((w * evr).sum()):.3f}**. "
+            f"Dimensions needed for 80% of captured variance: "
+            f"min {int(d80.min())} / median {int(d80.median())} / max {int(d80.max())} "
+            f"(close to {d} ⇒ flat spectrum, consider larger --dim).")
+    else:
+        add(f"- **{resid / total:.1%}** residual, i.e. within-cluster (point clusters: "
+            f"no subspace basis, so nothing beyond the centroid is captured)")
 
     # ---- Spatial / temporal statistics --------------------------------------
     cell_counts = torch.bincount(cell * K + lab, minlength=N_CELLS * K).view(N_CELLS, K)
@@ -250,40 +271,60 @@ def main():
     enrich = (decK / cnt) / (dec_tot / T)                  # 1.0 = temporally flat
     temp_cv = enrich.std(0) / enrich.mean(0).clamp(min=1e-12)
 
+    radius = m.get("radius")
+
     add("\n## Clusters (sorted by size)\n")
     add(f"Spatial columns are over the {int(cells_with_data.sum())} HEALPix cells with data; "
         f"`cells@50%` = number of cells holding half the cluster's tokens (low = localized); "
         f"`owned` = cells where this cluster is the most common label; "
         f"`files` = share of the {n_sampled_files} sampled time steps where the cluster appears; "
-        f"`tCV` = coefficient of variation of its share across time deciles (0 = constant in time).\n")
-    add(f"| cluster | tokens | share | EVR(top-{d}) | d80 | cells@50% | owned | files | tCV |")
-    add("|---|---|---|---|---|---|---|---|---|")
+        f"`tCV` = coefficient of variation of its share across time deciles (0 = constant in time)."
+        + (" `radius` = k-center's native objective, the max distance from centroid to any "
+           "member (vs. `tCV`-adjacent `trace`, the mean squared distance k-means/subspace "
+           "optimize)." if radius is not None else "") + "\n")
+    cols = ["cluster", "tokens", "share"]
+    if d > 0:
+        cols += [f"EVR(top-{d})", "d80"]
+    cols += ["cells@50%", "owned", "files", "tCV"]
+    if radius is not None:
+        cols += ["radius"]
+    add("| " + " | ".join(cols) + " |")
+    add("|" + "---|" * len(cols))
     for j in cnt.argsort(descending=True).tolist():
-        add(f"| {j} | {int(cnt[j]):,} | {float(w[j]):.1%} | {float(evr[j]):.3f} | {int(d80[j])} "
-            f"| {int(cells50[j])} | {int(owned[j])} | {float(files_pct[j]):.0%} "
-            f"| {float(temp_cv[j]):.2f} |")
+        row = [f"{j}", f"{int(cnt[j]):,}", f"{float(w[j]):.1%}"]
+        if d > 0:
+            row += [f"{float(evr[j]):.3f}", f"{int(d80[j])}"]
+        row += [f"{int(cells50[j])}", f"{int(owned[j])}", f"{float(files_pct[j]):.0%}",
+                f"{float(temp_cv[j]):.2f}"]
+        if radius is not None:
+            row += [f"{float(radius[j]):.2f}"]
+        add("| " + " | ".join(row) + " |")
 
-    # ---- Subspace affinity ---------------------------------------------------
-    add("\n## Subspace affinity between clusters\n")
-    add(f"Affinity(i,j) = ‖Uᵢᵀ·Uⱼ‖²_F / {d} ∈ [0,1]: mean squared cosine of the principal "
-        "angles between the two subspaces (1 = identical span, 0 = orthogonal). "
-        "High-affinity pairs are candidates for merging (K may be too large); "
-        "uniformly low values mean genuinely distinct regimes.\n")
-    Ucat = U.permute(1, 0, 2).reshape(D, K * d)
-    G = (Ucat.T @ Ucat).view(K, d, K, d)
-    aff = (G ** 2).sum((1, 3)) / d
-    mu_n = means / means.norm(dim=1, keepdim=True).clamp(min=1e-12)
-    mcos = mu_n @ mu_n.T
-    iu = torch.triu_indices(K, K, offset=1)
-    offdiag = aff[iu[0], iu[1]]
-    add(f"Off-diagonal affinity: median {float(offdiag.median()):.3f}, "
-        f"mean {float(offdiag.mean()):.3f}, max {float(offdiag.max()):.3f}.\n")
-    add("| pair | subspace affinity | mean-vector cosine |")
-    add("|---|---|---|")
-    top = offdiag.argsort(descending=True)[:args.top_pairs]
-    for t in top.tolist():
-        i, j = int(iu[0, t]), int(iu[1, t])
-        add(f"| {i} ↔ {j} | {float(aff[i, j]):.3f} | {float(mcos[i, j]):.3f} |")
+    # ---- Subspace affinity (only meaningful with an actual basis, d>0) ------
+    if d > 0:
+        add("\n## Subspace affinity between clusters\n")
+        add(f"Affinity(i,j) = ‖Uᵢᵀ·Uⱼ‖²_F / {d} ∈ [0,1]: mean squared cosine of the principal "
+            "angles between the two subspaces (1 = identical span, 0 = orthogonal). "
+            "High-affinity pairs are candidates for merging (K may be too large); "
+            "uniformly low values mean genuinely distinct regimes.\n")
+        Ucat = U.permute(1, 0, 2).reshape(D, K * d)
+        G = (Ucat.T @ Ucat).view(K, d, K, d)
+        aff = (G ** 2).sum((1, 3)) / d
+        mu_n = means / means.norm(dim=1, keepdim=True).clamp(min=1e-12)
+        mcos = mu_n @ mu_n.T
+        iu = torch.triu_indices(K, K, offset=1)
+        offdiag = aff[iu[0], iu[1]]
+        add(f"Off-diagonal affinity: median {float(offdiag.median()):.3f}, "
+            f"mean {float(offdiag.mean()):.3f}, max {float(offdiag.max()):.3f}.\n")
+        add("| pair | subspace affinity | mean-vector cosine |")
+        add("|---|---|---|")
+        top = offdiag.argsort(descending=True)[:args.top_pairs]
+        for t in top.tolist():
+            i, j = int(iu[0, t]), int(iu[1, t])
+            add(f"| {i} ↔ {j} | {float(aff[i, j]):.3f} | {float(mcos[i, j]):.3f} |")
+    else:
+        add("\n## Subspace affinity between clusters\n")
+        add("_Skipped: point clusters (d=0) have no subspace basis to compare._")
 
     # ---- Temporal profiles ---------------------------------------------------
     add("\n## Most time-varying clusters\n")
@@ -300,14 +341,15 @@ def main():
     add("\n## World map\n")
     try:
         png = "dominant_cluster_map.png"
-        colors = affinity_ordered_colors(U)
+        colors = affinity_ordered_colors(U, means)
         render_world_map(dominant, cells_with_data, K, os.path.join(args.dir, png), colors)
         add(f"![Dominant cluster per HEALPix cell]({png})\n")
+        affinity_basis = "subspace-affinity matrix" if d > 0 else "centroid-cosine affinity matrix"
         add("Each of the 12,288 HEALPix cells is colored by its most frequent cluster "
             "(grey = no data). Cell indices use **NESTED HEALPix ordering** (confirmed: "
             "geographically coherent continent-scale regions appear under NESTED, "
             "incoherent stripes under RING). Colors are assigned by spectral ordering of "
-            "the subspace-affinity matrix, so subspace-similar clusters share similar "
+            f"the {affinity_basis}, so similar clusters share similar "
             "hues — real regions read as smooth gradients, genuine noise stays speckled.")
     except Exception as e:                      # report must still be written
         add(f"_Map rendering failed: {e}_")
@@ -317,10 +359,15 @@ def main():
         "cluster is a **geographic regime** (region/surface type), stable in time.")
     add("- *High `tCV` with smooth decile profile* ⇒ **seasonal or trend** behaviour; check the "
         "decile table above.")
-    add("- *EVR near the global average with d80 ≈ d* ⇒ the subspace dimension truncates the "
-        "spectrum; re-run with larger `--dim` to capture more structure.")
-    add("- Subspace bases live in `model.pt['U']` `[K, 2048, d]` (orthonormal columns, "
-        "descending eigenvalue order); project tokens with `(x-μ_j) @ U_j`.")
+    if d > 0:
+        add("- *EVR near the global average with d80 ≈ d* ⇒ the subspace dimension truncates the "
+            "spectrum; re-run with larger `--dim` to capture more structure.")
+        add("- Subspace bases live in `model.pt['U']` `[K, 2048, d]` (orthonormal columns, "
+            "descending eigenvalue order); project tokens with `(x-μ_j) @ U_j`.")
+    if radius is not None:
+        add("- *Large `radius` relative to `trace`* ⇒ an outlier-driven cluster; k-center "
+            "minimizes the worst case, so a few far points can still leave `radius` high "
+            "even with low average (`trace`) variance.")
     add("")
 
     with open(out_path, "w") as f:

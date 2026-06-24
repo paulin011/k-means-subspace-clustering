@@ -7,6 +7,38 @@ The dataset (`latents_2/`, 1.2 TB) holds 13,021 files `latent_{i}.pt`, one per s
 
 ## Scripts
 
+### `cluster_io.py` — shared sampling/IO for all clustering algorithms
+
+Every clustering script (`subspace_kmeans.py`, and any k-means / k-center scripts) is
+expected to import this module rather than reimplement sampling or output, so that runs
+from different algorithms can be compared directly:
+
+- `load_tokens(args)` — samples `--num-files` latent files uniformly at random (or
+  reuses an exact file list via `--files-from`), loads them in parallel, and writes
+  `sample.json` (the reproducible manifest: fingerprint, seed, tokens-per-file, file
+  list in load order).
+- `sample_fingerprint(files, tokens_per_file, seed)` / `load_file_list(path)` — used to
+  identify/reuse a token sample.
+- `save_model(out_dir, **fields)` — validates shapes and writes `model.pt` under the
+  shared schema below.
+- `save_assignments(out_dir, file_id, cell_id, label)` — writes `assignments.pt`.
+
+**`model.pt` contract** (required regardless of algorithm): `U [K, 2048, d]` (`d=0` for
+plain point clusters — k-means/k-center have no subspace, just a centroid), `means
+[K, 2048]`, `eigvals [K, d]`, `trace [K]` (mean squared distance to centroid — what
+k-means/subspace_kmeans optimize), `counts [K]`, `explained_var_ratio [K]` (0 when
+`d=0`), `config` (must include `config["method"]` ∈ `{"kmeans", "kcenter",
+"subspace_kmeans"}`), per-iteration `history`, `sampled_files`, `sample_fingerprint`.
+Optional: `radius [K]` — k-center's native minimax objective (max distance from
+centroid to any member), populated only by k-center.
+
+K-means is literally the `d=0` case of K-subspaces clustering: the orthogonal-residual
+assignment formula collapses to plain squared distance to centroid when there's no
+basis. `subspace_kmeans.py --dim 0` exercises this path directly.
+
+`assignments.pt` contract (all algorithms): `file_id` / `cell_id` / `label` (int32) for
+every sampled token.
+
 ### `subspace_kmeans.py` — K-subspaces clustering
 
 K-means generalized to affine subspaces: each cluster is a mean μⱼ plus an orthonormal
@@ -31,11 +63,13 @@ file subsampling only thins the time axis. RAM = `num_files × tokens_per_file �
 
 ```bash
 # defaults: 1500 files (~75 GB RAM), K=64, d=16, ≤25 iterations  — ~7 min wall time
-nohup python3 subspace_kmeans.py --out subspace_out > subspace_run.log 2>&1 &
+nohup python3 subspace_kmeans.py --out subspace_kmeans_runs/v1_subspace_out \
+    > subspace_kmeans_runs/v1_subspace_out/run.log 2>&1 &
 
 # large run: 7000 files (~352 GB RAM), K=128, d=32  — ~1-1.5 h wall time
 nohup python3 subspace_kmeans.py --num-files 7000 --clusters 128 --dim 32 \
-    --iters 40 --max-ram-gb 420 --out subspace_big > subspace_big_run.log 2>&1 &
+    --iters 40 --max-ram-gb 420 --out subspace_kmeans_runs/v2_subspace_big \
+    > subspace_kmeans_runs/v2_subspace_big/run.log 2>&1 &
 ```
 
 **Reproducible sampling & cross-run comparison.** Every run writes `sample.json`
@@ -44,18 +78,19 @@ nohup python3 subspace_kmeans.py --num-files 7000 --clusters 128 --dim 32 \
 the only fair way to compare, e.g. K or `d` or iteration count — reuse that sample:
 
 ```bash
-python3 subspace_kmeans.py --files-from subspace_big/sample.json \
-    --clusters 128 --dim 32 --iters 100 --out subspace_big_i100
+python3 subspace_kmeans.py --files-from subspace_kmeans_runs/v2_subspace_big/sample.json \
+    --clusters 128 --dim 32 --iters 100 --out subspace_kmeans_runs/v3_subspace_big_i100
 ```
 
 `--files-from` accepts a `sample.json` or a `model.pt`; it overrides `--num-files`.
 Runs that share a fingerprint were clustered on identical tokens and are directly
-comparable (the report prints the fingerprint). The token set is order-independent, but
-load order — and therefore the random init — is preserved, so reusing a sample with the
-same `--seed`/`--tokens-per-file` reproduces a run *exactly*. `analyze_subspaces.py`
-backfills `sample.json` for older runs that predate the manifest.
+comparable (the report prints the fingerprint), even across algorithms. The token set is
+order-independent, but load order — and therefore the random init — is preserved, so
+reusing a sample with the same `--seed`/`--tokens-per-file` reproduces a run *exactly*.
+`analyze_clusters.py` backfills `sample.json` for older runs that predate the manifest.
 
-Outputs (in `--out`):
+Outputs (in `--out`), via `cluster_io.py`'s `save_model`/`save_assignments` — see the
+shared contract above:
 
 | file | contents |
 |---|---|
@@ -65,53 +100,62 @@ Outputs (in `--out`):
 
 Project a token onto its cluster subspace with `(x - means[j]) @ U[j]`.
 
-### `analyze_subspaces.py` — Markdown report generator
+### `analyze_clusters.py` — Markdown report generator
 
-Turns a result directory into a self-describing report (`report.md`): configuration,
-convergence table, global variance decomposition (between-cluster / subspace-captured /
-residual), a per-cluster table (size, EVR, effective dimensionality, spatial
-concentration over HEALPix cells, temporal coverage and variation), pairwise subspace
-affinity (mean squared principal-angle cosines, flags merge candidates), and temporal
-enrichment profiles of the most time-varying clusters.
+Algorithm-agnostic: reads any `model.pt`/`assignments.pt` following the `cluster_io.py`
+schema, from `subspace_kmeans.py` or from k-means/k-center (the `d=0` point-cluster
+case). Turns a result directory into a self-describing report (`report.md`):
+configuration, convergence table, global variance decomposition (between-cluster /
+subspace-captured / residual), a per-cluster table (size, spatial concentration over
+HEALPix cells, temporal coverage and variation, plus EVR/effective-dimensionality when
+`d>0`, plus k-center's `radius` when present), pairwise subspace affinity (`d>0` only —
+mean squared principal-angle cosines, flags merge candidates), and temporal enrichment
+profiles of the most time-varying clusters.
 
 ```bash
-python3 analyze_subspaces.py --dir subspace_out --out subspace_out/report.md
+python3 analyze_clusters.py --dir subspace_kmeans_runs/v1_subspace_out \
+    --out subspace_kmeans_runs/v1_subspace_out/report.md
 ```
 
 It also renders `dominant_cluster_map.png`: a Mollweide world map of the dominant
 cluster per cell under NESTED ordering (pure-numpy HEALPix geometry, no healpy needed).
 The encoder is confirmed to use NESTED cell indexing — geographically coherent continent-
 scale regions appear under NESTED, incoherent stripes under RING. Cells are colored by
-**spectral seriation of the subspace-affinity matrix** (Fiedler-vector order through the
-`turbo` colormap), so subspace-similar clusters get similar colors: real structure reads
-as smooth gradients while genuine noise stays speckled — this avoids the false "scatter"
-a random hue shuffle produces at large K. Use the script's `healpix_nest2ring` +
-`healpix_ring_lonlat` helpers to map any cell id to lat/lon.
+**spectral seriation of the subspace-affinity matrix** (or, for `d=0` point clusters,
+centroid-cosine affinity) via Fiedler-vector order through the `turbo` colormap, so
+similar clusters get similar colors: real structure reads as smooth gradients while
+genuine noise stays speckled — this avoids the false "scatter" a random hue shuffle
+produces at large K. Use the script's `healpix_nest2ring` + `healpix_ring_lonlat` helpers
+to map any cell id to lat/lon.
 
 ### Chained run (fire and forget)
 
 ```bash
-nohup bash -c 'python3 subspace_kmeans.py --num-files 7000 --clusters 128 --dim 32 \
-  --iters 40 --max-ram-gb 420 --out subspace_big && \
-  python3 analyze_subspaces.py --dir subspace_big --out subspace_big/report.md' \
-  > subspace_big_run.log 2>&1 &
+out=subspace_kmeans_runs/v2_subspace_big; mkdir -p "$out"
+nohup bash -c "python3 subspace_kmeans.py --num-files 7000 --clusters 128 --dim 32 \
+  --iters 40 --max-ram-gb 420 --out $out && \
+  python3 analyze_clusters.py --dir $out --out $out/report.md" \
+  > $out/run.log 2>&1 &
 ```
 
 ## Results so far
 
-- `subspace_out/` + `subspace_out/report.md` — first full run (1500 files, K=64, d=16,
+Runs live under `subspace_kmeans_runs/`, each in a `vI_<name>` directory numbered in
+chronological order (v1 → v5 below).
+
+- `v1_subspace_out/` — first full run (1500 files, K=64, d=16,
   6.7 min). Key findings: clusters are **spatially localized but temporally universal**
   (geographic regimes — each present in ~100% of time steps but concentrated in a few
   hundred of the 12,288 cells); cluster identity alone explains 8.5% of token variance,
   the top-16 subspaces a further 33.5%; within-cluster spectra are fairly flat
   (d80 ≈ 10–12 of 16), motivating larger `--dim`.
 - **The encoder's HEALPix cell indexing is NESTED** (established from
-  `subspace_out/dominant_cluster_map.png`: coherent continent-scale regions under the
+  `v1_subspace_out/dominant_cluster_map.png`: coherent continent-scale regions under the
   NESTED interpretation, incoherent stripes under RING).
-- `subspace_big/` — larger run (7000 files ≈ 86 M tokens, K=128, d=32, 65 min,
+- `v2_subspace_big/` — larger run (7000 files ≈ 86 M tokens, K=128, d=32, 65 min,
   fingerprint `82ca602ed7e7`). Within-cluster EVR rose to 0.49 (d=32 captures more);
   geographic structure sharpened into clear latitude bands + continents.
-- `subspace_big_i100/` — same sample as `subspace_big` (fingerprint `82ca602ed7e7`),
+- `v3_subspace_big_i100/` — same sample as v2 (fingerprint `82ca602ed7e7`),
   K=128 d=32 but **100 iterations**, to see how much further the objective settles past
   iter 40 (it was still at ~0.9% labels-changed). Queued 2026-06-12.
 - **The K=128 map looked "more scattered" than K=64 — but that was a visualization
@@ -121,6 +165,14 @@ nohup bash -c 'python3 subspace_kmeans.py --num-files 7000 --clusters 128 --dim 
   mode-purity is higher (0.31 → 0.35). Doubling K just doubles region boundaries and a
   random hue shuffle aliased the finer sub-regions; the affinity-ordered colormap (above)
   restores smooth gradients.
+- `v4_subspace_big_d64/` — same sample as v2 (fingerprint `82ca602ed7e7`), K=128 but
+  d=64. Count-weighted within-cluster EVR(top-64) rose to 0.664 and residual variance
+  dropped to 31.5%; d80 (min/median/max 28/37/65) still close to d, so the spectrum stays
+  fairly flat — larger `--dim` keeps paying off.
+- `v5_subspace_big_d128/` — same sample as v2 (fingerprint `82ca602ed7e7`), K=128, d=128.
+  EVR(top-128) reached 0.816, residual down to 17.8%; d80 (min/median/max 47/63/129) is
+  again close to d, so within-cluster structure is still not fully captured even at
+  d=128.
 
 ## Hardware notes (this machine)
 

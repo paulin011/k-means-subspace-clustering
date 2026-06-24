@@ -29,7 +29,7 @@ label — which cluster (0…127) it was assigned to.
 This is what lets the report tie clusters to geography (via cell_id) and time (via file_id, since file index ≈ time step).
 
 sample.json — the manifest
-{fingerprint, num_files: 7000, tokens_per_file: 12288, seed: 0, src, files: [...7000 ids...]}. Its only job is reproducibility: --files-from subspace_big_i100/sample.json re-clusters the identical token set under a different K or d for a fair comparison.
+{fingerprint, num_files: 7000, tokens_per_file: 12288, seed: 0, src, files: [...7000 ids...]}. Its only job is reproducibility: --files-from subspace_kmeans_runs/v3_subspace_big_i100/sample.json re-clusters the identical token set under a different K or d for a fair comparison.
 
 Reading the report section by section
 Header & Configuration
@@ -71,7 +71,7 @@ World map (dominant_cluster_map.png)
 Each of the 12288 cells is colored by its dominant cluster, in NESTED HEALPix ordering (confirmed correct because continents read as coherent regions; RING ordering would produce stripes). Colors come from a spectral ordering of the affinity matrix, so subspace-similar clusters get similar hues — real geographic regions appear as smooth color gradients, while genuine noise stays speckled. At K=128 some apparent "scatter" is just colormap aliasing (too many clusters, too few distinguishable hues), not a sign of bad clustering — per the README, neighbor-agreement metrics actually improve with K.
 
 Bottom line for this specific run
-subspace_big_i100 exists to answer one question: does running longer help? The convergence table says no — the objective is flat after ~10–15 iterations (2698 → 2672 over 90 more iterations). The real lever for capturing more structure is larger --dim, flagged by the flat per-cluster spectra (d80 ≈ 20–22 against d=32), not more iterations. Compare it directly against subspace_big/ (same sample, fewer iters) to confirm the two converged to essentially the same solution.
+v3_subspace_big_i100 exists to answer one question: does running longer help? The convergence table says no — the objective is flat after ~10–15 iterations (2698 → 2672 over 90 more iterations). The real lever for capturing more structure is larger --dim, flagged by the flat per-cluster spectra (d80 ≈ 20–22 against d=32), not more iterations. Compare it directly against v2_subspace_big/ (same sample, fewer iters) to confirm the two converged to essentially the same solution.
 
-Want me to actually load model.pt/assignments.pt and verify any of these numbers, or diff this run against subspace_big to confirm they converged to the same place?
+Want me to actually load model.pt/assignments.pt and verify any of these numbers, or diff this run against v2_subspace_big to confirm they converged to the same place?
 

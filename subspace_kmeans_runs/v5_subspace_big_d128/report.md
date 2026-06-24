@@ -7,7 +7,7 @@
 | parameter | value |
 |---|---|
 | src | latents_2 |
-| num_files | 1500 |
+| num_files | 7000 |
 | tokens_per_file | 12288 |
 | clusters | 128 |
 | dim | 128 |
