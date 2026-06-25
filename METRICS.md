@@ -20,7 +20,16 @@ Per-iteration optimization history:
 
 - **objective/token** (`obj_per_token`) — mean squared residual per token: squared
   orthogonal distance to the assigned affine subspace (for `d = 0`, squared distance to
-  the centroid). Decreases monotonically and flattens at convergence.
+  the centroid). Decreases monotonically and flattens at convergence. The orthogonal
+  residual is ≥ 0 mathematically, but TF32 matmul rounding can make it tiny-negative,
+  so only the objective *sum* is `clamp_min(0)`; the cluster *assignment* (argmin) is
+  taken on the raw residual — the clamp stays after `min`, never before (clamping first
+  would distort assignments between near-tied subspaces).
+- **`final_obj_per_token`** (top-level, not per-iteration) — the objective of the *saved*
+  model measured on its final relabel sweep; this is the true minimised residual under
+  the saved bases. The per-iteration `history` objectives are one step behind (each is
+  the *previous* model's objective), so `holdout_eval.py` compares the held-out
+  objective against `final_obj_per_token`, not `history[-1]`. (Absent in older runs.)
 - **labels changed** (`frac_changed`) — fraction of tokens that switched cluster this
   iteration; → 0 means converged.
 - **min size / max size** — smallest and largest cluster token counts; watch for
@@ -52,7 +61,26 @@ For `d > 0` it also reports:
 - **d80** — number of subspace dimensions needed to reach 80% of *captured* variance,
   reported as min/median/max across clusters. **d80 ≈ d ⇒ flat spectrum** (the subspace is
   truncating real structure → increase `--dim`); **d80 ≪ d ⇒ concentrated spectrum** (`d`
-  may be larger than needed).
+  may be larger than needed). d80 is capped at `d+1`: a cluster reporting `d+1` never
+  reaches 80% even using all `d` kept directions (its spectrum is essentially flat).
+
+## Held-out generalization (only if `holdout.json` is present)
+
+Written by `holdout_eval.py`. Everything above is **in-sample** — measured on the tokens
+the model was fit on. This section re-measures the residual on tokens from latent files
+the run never saw, using the frozen trained means/bases and the same assignment rule.
+
+- **in-sample residual %** — the `residual / total` from the section above.
+- **held-out residual %** — the same ratio on unseen tokens. `total` uses the *frozen*
+  trained `μ_global`, so the denominator is comparable.
+- **generalization gap** = held-out − in-sample. Near 0 ⇒ the subspaces capture reusable
+  structure. A large positive gap ⇒ overfitting (the bases memorise training tokens →
+  lower `--dim` or increase the token count). The objective/token line is the same check
+  in raw units (the minimised orthogonal residual), held-out vs the final training iter.
+
+We do **not** re-split held-out variance into between/within: with frozen means the ANOVA
+identity (total = between + within) no longer holds exactly, so only `residual / total` is
+both well-defined and directly comparable to the in-sample report.
 
 ## Per-cluster table (sorted by size)
 

@@ -1,6 +1,6 @@
 # Clustering report (subspace_kmeans) — `subspace_kmeans_runs/v6_subspace_big_d64`
 
-*Generated 2026-06-24 20:43 by `analyze_clusters.py`. K=128 affine subspaces of dim 64 in 2048-dim token space, 86,016,000 tokens.*
+*Generated 2026-06-25 15:30 by `analyze_clusters.py`. K=128 affine subspaces of dim 64 in 2048-dim token space, 86,016,000 tokens.*
 
 ## Configuration
 
@@ -69,7 +69,19 @@ Total token variance E‖x−μ_global‖² = **5998**, split into:
 - **60.1%** within clusters, captured by the top-64 subspace directions
 - **31.5%** residual (unexplained by the model)
 
-Count-weighted within-cluster EVR(top-64): **0.664**. Dimensions needed for 80% of captured variance: min 28 / median 37 / max 40 (close to 64 ⇒ flat spectrum, consider larger --dim).
+Count-weighted within-cluster EVR(top-64): **0.664**. Dimensions needed for 80% of captured variance: min 28 / median 37 / max 40 (d80 is capped at d+1=65: a cluster reaching that value never hits 80% even using all 64 kept directions).
+
+## Held-out generalization
+
+The variance split above is measured on the tokens the model was *fit* on. `holdout_eval.py` froze the trained means and bases and replayed the assignment rule on **2,457,600 tokens from 200 latent files the run never saw**. A held-out residual close to the in-sample residual means the subspaces capture reusable structure rather than memorising the training tokens.
+
+| residual (unexplained variance) | fraction |
+|---|---|
+| in-sample | 31.5% |
+| held-out | 31.5% |
+| generalization gap | +0.0% |
+
+Objective/token (the minimised orthogonal residual): in-sample **1888.51** vs held-out **1887.16**. Verdict: the subspaces **generalise**; the in-sample residual is trustworthy.
 
 ## Clusters (sorted by size)
 

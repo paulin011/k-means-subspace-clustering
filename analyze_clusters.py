@@ -33,6 +33,8 @@ import time
 import numpy as np
 import torch
 
+from cluster_io import OVERFIT_GAP_THRESHOLD
+
 N_CELLS = 12288
 N_FILES_TOTAL = 13021
 NSIDE = 32
@@ -90,26 +92,36 @@ def healpix_nest2ring(nside, p):
     return n_before + jp - 1
 
 
-def affinity_ordered_colors(U, means):
-    """Color clusters so similar ones get similar colors.
+def build_affinity_matrix(U, means):
+    """K×K cluster affinity as a torch tensor (computed once, reused).
 
-    Builds a K×K affinity matrix -- subspace affinity (mean squared principal-angle
-    cosine) when a basis exists (d>0), or centroid cosine similarity as a fallback for
-    point clusters (d=0, e.g. k-means/k-center) -- orders clusters along the Fiedler
-    vector of its normalized graph Laplacian (the classic 1-D spectral seriation that
-    places similar items adjacent), and maps that order through the smooth perceptual
-    `turbo` colormap. With this coloring genuine spatial structure shows up as smooth
-    gradients; only true salt-and-pepper noise stays speckled -- so the map's legibility
-    no longer rides on a random hue shuffle.
+    Subspace affinity (mean squared principal-angle cosine) when a basis exists
+    (d>0): ‖Uᵢᵀ·Uⱼ‖²_F / d ∈ [0,1]. Centroid cosine similarity as a fallback for
+    point clusters (d=0, e.g. k-means/k-center). The d>0 path concatenates the
+    per-cluster bases into [DIM, K*d] and does one [K*d, K*d] matmul -- computed
+    once here so the world-map coloring and the affinity table share it instead of
+    each rebuilding it (at d=128 that matmul is ~1 GB).
     """
-    import matplotlib.pyplot as plt
     K, D, d = U.shape
     if d > 0:
         Ucat = U.permute(1, 0, 2).reshape(D, K * d)
-        A = ((Ucat.T @ Ucat).view(K, d, K, d) ** 2).sum((1, 3)).numpy() / d
-    else:
-        mu_n = means / means.norm(dim=1, keepdim=True).clamp(min=1e-12)
-        A = (mu_n @ mu_n.T).numpy()
+        return ((Ucat.T @ Ucat).view(K, d, K, d) ** 2).sum((1, 3)) / d
+    mu_n = means / means.norm(dim=1, keepdim=True).clamp(min=1e-12)
+    return mu_n @ mu_n.T
+
+
+def affinity_ordered_colors(aff, K):
+    """Color clusters so similar ones get similar colors.
+
+    Orders clusters along the Fiedler vector of the normalized graph Laplacian of
+    the precomputed affinity matrix `aff` (the classic 1-D spectral seriation that
+    places similar items adjacent), and maps that order through the smooth
+    perceptual `turbo` colormap. With this coloring genuine spatial structure
+    shows up as smooth gradients; only true salt-and-pepper noise stays speckled
+    -- so the map's legibility no longer rides on a random hue shuffle.
+    """
+    import matplotlib.pyplot as plt
+    A = aff.detach().cpu().numpy() if torch.is_tensor(aff) else np.asarray(aff)
     np.fill_diagonal(A, 0.0)
     deg = A.sum(1)
     dinv = 1.0 / np.sqrt(np.maximum(deg, 1e-12))
@@ -245,9 +257,36 @@ def main():
         add(f"\nCount-weighted within-cluster EVR(top-{d}): **{float((w * evr).sum()):.3f}**. "
             f"Dimensions needed for 80% of captured variance: "
             f"min {int(d80.min())} / median {int(d80.median())} / max {int(d80.max())} "
+            f"(d80 is capped at d+1={d + 1}: a cluster reaching that value never hits 80% "
+            f"even using all {d} kept directions).")
     else:
         add(f"- **{resid / total:.1%}** residual, i.e. within-cluster (point clusters: "
             f"no subspace basis, so nothing beyond the centroid is captured)")
+
+    # ---- Held-out generalization (only if holdout_eval.py has been run) ------
+    hj = os.path.join(args.dir, "holdout.json")
+    if os.path.exists(hj):
+        with open(hj) as f:
+            ho = json.load(f)
+        add("\n## Held-out generalization\n")
+        add(f"The variance split above is measured on the tokens the model was *fit* on. "
+            f"`holdout_eval.py` froze the trained means and bases and replayed the assignment "
+            f"rule on **{ho['num_holdout_tokens']:,} tokens from {ho['num_holdout_files']} "
+            f"latent files the run never saw**. A held-out residual close to the in-sample "
+            f"residual means the subspaces capture reusable structure rather than memorising "
+            f"the training tokens.\n")
+        g = ho["holdout"]["residual_frac"] - ho["in_sample"]["residual_frac"]
+        verdict = ("**overfitting** — the bases are too expensive for the signal; lower `--dim` "
+                   "or add tokens" if g > OVERFIT_GAP_THRESHOLD else
+                   "the subspaces **generalise**; the in-sample residual is trustworthy")
+        add("| residual (unexplained variance) | fraction |")
+        add("|---|---|")
+        add(f"| in-sample | {ho['in_sample']['residual_frac']:.1%} |")
+        add(f"| held-out | {ho['holdout']['residual_frac']:.1%} |")
+        add(f"| generalization gap | {g:+.1%} |")
+        add(f"\nObjective/token (the minimised orthogonal residual): "
+            f"in-sample **{ho['in_sample']['final_obj_per_token']:.2f}** vs held-out "
+            f"**{ho['holdout']['residual']:.2f}**. Verdict: {verdict}.")
 
     # ---- Spatial / temporal statistics --------------------------------------
     cell_counts = torch.bincount(cell * K + lab, minlength=N_CELLS * K).view(N_CELLS, K)
@@ -267,7 +306,8 @@ def main():
     dec = fid * 10 // N_FILES_TOTAL                        # time decile by file index
     decK = torch.bincount(dec * K + lab, minlength=10 * K).view(10, K).float()
     dec_tot = decK.sum(1, keepdim=True)
-    enrich = (decK / cnt) / (dec_tot / T)                  # 1.0 = temporally flat
+    # clamp guards an empty saved cluster (cnt==0 -> 0/0 -> NaN temp_cv).
+    enrich = (decK / cnt.clamp(min=1)) / (dec_tot / T)     # 1.0 = temporally flat
     temp_cv = enrich.std(0) / enrich.mean(0).clamp(min=1e-12)
 
     radius = m.get("radius")
@@ -300,15 +340,13 @@ def main():
         add("| " + " | ".join(row) + " |")
 
     # ---- Subspace affinity (only meaningful with an actual basis, d>0) ------
+    aff = build_affinity_matrix(U, means)                  # [K,K]; reused by the world map
     if d > 0:
         add("\n## Subspace affinity between clusters\n")
         add(f"Affinity(i,j) = ‖Uᵢᵀ·Uⱼ‖²_F / {d} ∈ [0,1]: mean squared cosine of the principal "
             "angles between the two subspaces (1 = identical span, 0 = orthogonal). "
             "High-affinity pairs are candidates for merging (K may be too large); "
             "uniformly low values mean genuinely distinct regimes.\n")
-        Ucat = U.permute(1, 0, 2).reshape(D, K * d)
-        G = (Ucat.T @ Ucat).view(K, d, K, d)
-        aff = (G ** 2).sum((1, 3)) / d
         mu_n = means / means.norm(dim=1, keepdim=True).clamp(min=1e-12)
         mcos = mu_n @ mu_n.T
         iu = torch.triu_indices(K, K, offset=1)
@@ -340,7 +378,7 @@ def main():
     add("\n## World map\n")
     try:
         png = "dominant_cluster_map.png"
-        colors = affinity_ordered_colors(U, means)
+        colors = affinity_ordered_colors(aff, K)
         render_world_map(dominant, cells_with_data, K, os.path.join(args.dir, png), colors)
         add(f"![Dominant cluster per HEALPix cell]({png})\n")
         affinity_basis = "subspace-affinity matrix" if d > 0 else "centroid-cosine affinity matrix"

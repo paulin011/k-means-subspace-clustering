@@ -65,7 +65,10 @@ Algorithm details:
 
 Token selection: `--num-files` files drawn uniformly at random, `--tokens-per-file`
 random cells from each (default: all 12,288). Every file covers the whole globe, so
-file subsampling only thins the time axis. RAM = `num_files × tokens_per_file × 4096` bytes.
+file subsampling only thins the time axis. RAM = `num_files × tokens_per_file × 4096` bytes
+(the fp16 `data` buffer; `--max-ram-gb` guards against this). True peak is a little higher —
+the int32 `file_id`/`cell_id` arrays (~8 bytes/token) plus transient float32 decode buffers
+(~`--load-workers` × 100 MB) — so leave headroom.
 
 ```bash
 # defaults: 1500 files (~75 GB RAM), K=64, d=16, ≤25 iterations  — ~7 min wall time
@@ -136,7 +139,28 @@ centroid-cosine affinity) via Fiedler-vector order through the `turbo` colormap,
 similar clusters get similar colors: real structure reads as smooth gradients while
 genuine noise stays speckled — this avoids the false "scatter" a random hue shuffle
 produces at large K. Use the script's `healpix_nest2ring` + `healpix_ring_lonlat` helpers
-to map any cell id to lat/lon.
+to map any cell id to lat/lon. These pure-numpy helpers are validated (data-free):
+`nest2ring` is a bijection of `[0, 12288)`, lon/lat are clean (lat ∈ [−88.5°, 88.5°],
+no NaN/inf), and the equal-area cell distribution matches analytics (50.0% of cells at
+|lat| < 30°; 13.7% at |lat| > 60° vs 13.4% theoretical).
+
+### `holdout_eval.py` — generalization check on unseen files
+
+The variance decomposition in the report is measured on the tokens the model was *fit*
+on. With `d`-dim per-cluster bases the model has many free parameters (K·2048·d), so an
+in-sample residual could be optimistic. This script freezes the trained means and bases
+and replays the **exact** assignment rule (`‖x−μ_j‖² − ‖Uⱼᵀ(x−μ_j)‖²`) on tokens from
+latent files the run never saw (sampled disjoint from `sampled_files`), then reports the
+held-out residual fraction next to the in-sample one. A small gap ⇒ the subspaces capture
+reusable structure; a large positive gap ⇒ overfitting (lower `--dim` or add tokens).
+
+```bash
+python3 holdout_eval.py --dir subspace_kmeans_runs/v6_subspace_big_d64 --num-files 200
+```
+
+Writes `<dir>/holdout.json`; the next `analyze_clusters.py` run renders a **Held-out
+generalization** section from it automatically. (v6, d=64: held-out 31.3% vs in-sample
+31.5% — the subspaces generalise.)
 
 ### Chained run (fire and forget)
 

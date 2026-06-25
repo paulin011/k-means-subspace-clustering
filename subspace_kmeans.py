@@ -92,6 +92,10 @@ def sweep_worker(rank, device, data, labels, chunks, model, K, d, affine,
         else:
             R = xnorm - pe
         vals, a = R.min(1)
+        # Assignment (argmin) uses the raw residual R; only the objective *sum* is
+        # clamped at 0 to absorb TF32-induced tiny negatives (the orthogonal
+        # residual is >= 0 mathematically). Keep the clamp AFTER min(1) -- clamping
+        # R first would distort the argmin between near-tied subspaces.
         obj += vals.clamp_min(0).double().sum().item()
         a_cpu = a.to("cpu", torch.int32)
         changed += (a_cpu != labels[i0:i1]).sum().item()
@@ -237,15 +241,23 @@ def main():
             print("Converged.", flush=True)
             break
 
-    # Final labeling under the final bases.
+    # Final labeling under the final bases. This relabels every token under the
+    # model we are about to save, so the assignment it produces is the one stored
+    # in assignments.pt. Reconcile counts to these final labels (update_model fit
+    # from the *previous* assignment, so model["counts"] would otherwise lag by one
+    # relabelling step), and record this sweep's objective as the true objective of
+    # the saved model (history[-1] is the previous model's objective).
     _, obj, changed = run_sweep(devices, data, labels, model, K, d, affine,
                                 accumulate=False, chunk_size=args.chunk_size)
-    print(f"final: obj/token={obj / T:.4f}  changed={changed / T:.4%}", flush=True)
+    model["counts"] = torch.bincount(labels.long(), minlength=K)
+    final_obj_per_token = obj / T
+    print(f"final: obj/token={final_obj_per_token:.4f}  changed={changed / T:.4%}", flush=True)
 
     fp = sample_fingerprint(sampled, min(args.tokens_per_file, N_CELLS), args.seed)
     config = {**vars(args), "method": "subspace_kmeans"}
     save_model(args.out, **model, config=config, history=history,
-               sampled_files=sampled, sample_fingerprint=fp)
+               sampled_files=sampled, sample_fingerprint=fp,
+               final_obj_per_token=final_obj_per_token)
     save_assignments(args.out, file_id=file_ids, cell_id=cell_ids, label=labels)
     evr = model["eigvals"].sum(1) / model["trace"].clamp(min=1e-12) if d > 0 else torch.zeros(K)
     print(f"Saved model.pt + assignments.pt to {args.out}/")

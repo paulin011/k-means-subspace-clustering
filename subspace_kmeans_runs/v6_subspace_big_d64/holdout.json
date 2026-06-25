@@ -1,0 +1,18 @@
+{
+  "num_holdout_files": 200,
+  "num_holdout_tokens": 2457600,
+  "holdout": {
+    "total": 5991.998403254449,
+    "residual": 1887.1603349933278,
+    "within": 5487.150159090658,
+    "captured": 3599.989824097231,
+    "residual_frac": 0.3149467352942467,
+    "modeled_frac": 0.6850532647057532
+  },
+  "in_sample": {
+    "total": 5998.2779541015625,
+    "residual": 1888.003173828125,
+    "residual_frac": 0.31475753345793644,
+    "final_obj_per_token": 1888.5121023181564
+  }
+}

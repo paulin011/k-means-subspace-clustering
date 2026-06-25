@@ -24,6 +24,12 @@ model.pt contract (required keys, regardless of algorithm):
 Optional keys:
   radius             [K] max distance from centroid to any member -- k-center's native
                      (minimax) objective; absent for algorithms that don't optimize it.
+  final_obj_per_token scalar objective/token of the *saved* model -- the minimised
+                     orthogonal residual under the saved means/bases, measured on the
+                     final relabel sweep (so it is the true objective of the model that
+                     was saved, not the previous iteration's). holdout_eval.py compares
+                     the held-out objective against this. Absent in older runs; fall back
+                     to history[-1]["obj_per_token"].
 
 assignments.pt contract (all algorithms):
   file_id, cell_id, label   each [T] int32 -- which sampled token, which cluster.
@@ -40,6 +46,11 @@ import torch
 N_FILES_TOTAL = 13021
 N_CELLS = 12288
 DIM = 2048
+
+# Held-out residual-fraction gap (held-out - in-sample) above which a run is
+# flagged as overfitting. Shared by holdout_eval.py and analyze_clusters.py so
+# the script's verdict and the report's verdict cannot drift apart.
+OVERFIT_GAP_THRESHOLD = 0.03
 
 
 def sample_fingerprint(files, tokens_per_file, seed):
@@ -127,7 +138,8 @@ def load_tokens(args):
 
 
 def save_model(out_dir, *, U, means, eigvals, trace, counts, config, history,
-               sampled_files, sample_fingerprint, radius=None):
+               sampled_files, sample_fingerprint, radius=None,
+               final_obj_per_token=None):
     """Validate shapes and write model.pt under the shared cross-algorithm schema."""
     K, D, d = U.shape
     assert means.shape == (K, D), f"means {tuple(means.shape)} != ({K}, {D})"
@@ -144,6 +156,8 @@ def save_model(out_dir, *, U, means, eigvals, trace, counts, config, history,
            "sampled_files": sampled_files, "sample_fingerprint": sample_fingerprint}
     if radius is not None:
         obj["radius"] = radius
+    if final_obj_per_token is not None:
+        obj["final_obj_per_token"] = final_obj_per_token
     os.makedirs(out_dir, exist_ok=True)
     torch.save(obj, os.path.join(out_dir, "model.pt"))
 
