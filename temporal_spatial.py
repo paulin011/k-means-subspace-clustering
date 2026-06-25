@@ -78,7 +78,7 @@ def main():
     lab = a["label"].long()
     cell = a["cell_id"].long()
     fid = a["file_id"].long()
-    cnt = m["counts"].float()
+    cnt = torch.bincount(lab, minlength=K).float()              # from assignments (not model field)
     T = lab.numel()
     sampled_files = sorted(m.get("sampled_files", []))
 
@@ -105,6 +105,8 @@ def main():
 
     maps_dir = os.path.join(args.dir, "maps")
     os.makedirs(maps_dir, exist_ok=True)
+    # report image refs are relative to the report file, so --out outside --dir still resolves
+    maps_rel = os.path.relpath(maps_dir, os.path.dirname(os.path.abspath(out_path)))
 
     print(f"Rendering maps (heatmap={heat}, coastlines={coast})...", flush=True)
     t0 = time.time()
@@ -119,24 +121,36 @@ def main():
     print(f"  rendered 13 maps in {time.time() - t0:.1f}s", flush=True)
 
     # ---- monthly enrichment (seasonality) -----------------------------------
-    enrich = (monthK / cnt.clamp(min=1).unsqueeze(0)) / (month_tot.unsqueeze(1) / T)   # [12,K], 1.0=flat
-    seas = enrich.std(0) / enrich.mean(0).clamp(min=1e-12)     # [K] seasonality score
+    # nan marks a calendar month with no sampled files (or a cluster absent there);
+    # seasonality is computed nan-aware so an empty month can't fabricate signal.
+    denom = month_tot.unsqueeze(1) / T                          # [12,1]; 0 for empty months
+    raw = (monthK / cnt.clamp(min=1).unsqueeze(0)) / denom.clamp(min=1e-12)
+    enrich = torch.where(month_tot.unsqueeze(1) > 0, raw,
+                         torch.full_like(raw, float("nan")))    # [12,K], 1.0=flat, nan=no data
+    enr_np = enrich.numpy()
+    seas = torch.tensor(np.nanstd(enr_np, axis=0) /
+                        np.nanmean(enr_np, axis=0).clip(1e-12))  # [K] seasonality score
 
     # ---- month-to-month dominant-flip rate (temporal stability) -------------
     flips = []
     for mm in range(11):
         both = valid_m[mm] & valid_m[mm + 1]
-        flips.append(float((dominant_m[mm][both] != dominant_m[mm + 1][both]).float().mean()))
+        flips.append(float((dominant_m[mm][both] != dominant_m[mm + 1][both]).float().mean())
+                     if both.any() else float("nan"))
 
     # ---- Jan vs Jul shift ---------------------------------------------------
     both_17 = valid_m[0] & valid_m[6]
-    jan_jul_changed = float((dominant_m[0][both_17] != dominant_m[6][both_17]).float().mean())
+    jan_jul_changed = (float((dominant_m[0][both_17] != dominant_m[6][both_17]).float().mean())
+                       if both_17.any() else float("nan"))
     owned = lambda dom, v: torch.bincount(dom[v].long(), minlength=K)   # cells per cluster
     delta_jul_jan = (owned(dominant_m[6], valid_m[6]) - owned(dominant_m[0], valid_m[0])).float()
 
     # ============================= report ====================================
     L = []
     add = L.append
+    def cell(v, spec=".2f"):                      # nan (empty month / unseen cluster) -> en-dash
+        v = float(v)
+        return "–" if v != v else format(v, spec)
     add(f"# Temporal & spatial report — `{args.dir}`")
     add(f"\n*Generated {time.strftime('%Y-%m-%d %H:%M')} by `temporal_spatial.py`. "
         f"K={K} {'affine subspaces (d=' + str(d) + ')' if d > 0 else 'point clusters'}, "
@@ -157,7 +171,7 @@ def main():
                     for mm in range(12)) + ".")
 
     add("\n## Annual map\n")
-    add("![Annual dominant cluster](maps/map_annual.png)\n")
+    add(f"![Annual dominant cluster]({maps_rel}/map_annual.png)\n")
     add("Dominant cluster per HEALPix cell across the full sample (NESTED ordering; grey = no "
         "data). Continent outlines are Natural Earth 110m; the field is the per-cell RGB "
         "(from spectral-ordered cluster colors) interpolated to a smooth heatmap. "
@@ -199,7 +213,7 @@ def main():
     for mm in range(12):
         add(f"**{calendar.month_name[mm + 1]}** ({int(files_per_month[mm])} files, "
             f"{int(month_tot[mm]):,} tokens)\n")
-        add(f"![{calendar.month_name[mm + 1]}](maps/map_month_{mm + 1:02d}.png)\n")
+        add(f"![{calendar.month_name[mm + 1]}]({maps_rel}/map_month_{mm + 1:02d}.png)\n")
 
     add("\n## Most seasonal clusters\n")
     add("Enrichment of each cluster per month = `(cluster share in month) / (its average share)`. "
@@ -208,19 +222,23 @@ def main():
     add("| cluster | seasonality | " + " | ".join(calendar.month_abbr[mm + 1] for mm in range(12)) + " |")
     add("|---|---|" + "|".join(["---"] * 12) + "|")
     for j in seas.argsort(descending=True)[:args.top_seasonal].tolist():
-        row = " | ".join(f"{float(enrich[mm, j]):.2f}" for mm in range(12))
-        add(f"| {j} | {float(seas[j]):.2f} | {row} |")
+        row = " | ".join(cell(enrich[mm, j]) for mm in range(12))
+        add(f"| {j} | {cell(seas[j])} | {row} |")
 
     add("\n## Month-to-month stability\n")
+    fa = np.array(flips, dtype=float)
+    fa_valid = fa[~np.isnan(fa)]
     add("Share of cells whose **dominant cluster changes** between consecutive months "
-        "(low = stable geography; peaks mark the seasonal transitions). Over all 11 month-pairs: "
-        f"min **{min(flips):.1%}**, mean **{sum(flips) / len(flips):.1%}**, "
-        f"max **{max(flips):.1%}**.\n")
+        "(low = stable geography; peaks mark the seasonal transitions)."
+        + (f" Over the {len(fa_valid)} comparable month-pair(s): "
+           f"min **{np.nanmin(fa):.1%}**, mean **{np.nanmean(fa):.1%}**, "
+           f"max **{np.nanmax(fa):.1%}**.\n" if len(fa_valid)
+           else " (no consecutive months both have data.)\n"))
     add("| transition | cells changing dominant cluster |")
     add("|---|---|")
     for mm in range(11):
-        add(f"| {calendar.month_abbr[mm + 1]}→{calendar.month_abbr[mm + 2]} | {flips[mm]:.1%} |")
-    add(f"\n**Jan ↔ Jul** (winter vs summer hemisphere): **{jan_jul_changed:.1%}** of cells change "
+        add(f"| {calendar.month_abbr[mm + 1]}→{calendar.month_abbr[mm + 2]} | {cell(flips[mm], '.1%')} |")
+    add(f"\n**Jan ↔ Jul** (winter vs summer hemisphere): **{cell(jan_jul_changed, '.1%')}** of cells change "
         "dominant cluster. Largest cluster shifts (owned-cell count, Jul − Jan): "
         + ", ".join(f"{int(j)}: {delta_jul_jan[j]:+.0f}"
                     for j in delta_jul_jan.argsort(descending=True)[:5].tolist())

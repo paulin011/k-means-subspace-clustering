@@ -86,8 +86,9 @@ def build_affinity_matrix(U, means):
     """K×K cluster affinity as a torch tensor (computed once, reused).
 
     Subspace affinity (mean squared principal-angle cosine) when a basis exists
-    (d>0): ‖Uᵢᵀ·Uⱼ‖²_F / d ∈ [0,1]. Centroid cosine similarity as a fallback for
-    point clusters (d=0, e.g. k-means/k-center). The d>0 path concatenates the
+    (d>0): ‖Uᵢᵀ·Uⱼ‖²_F / d ∈ [0,1]. Centroid cosine mapped to [0,1] via (1+cos)/2
+    for point clusters (d=0, e.g. k-means/k-center) -- raw signed cosine would make
+    the graph Laplacian indefinite (non-PSD). The d>0 path concatenates the
     per-cluster bases into [DIM, K*d] and does one [K*d, K*d] matmul -- computed
     once here so the world-map coloring and the affinity table share it instead of
     each rebuilding it (at d=128 that matmul is ~1 GB).
@@ -97,7 +98,7 @@ def build_affinity_matrix(U, means):
         Ucat = U.permute(1, 0, 2).reshape(D, K * d)
         return ((Ucat.T @ Ucat).view(K, d, K, d) ** 2).sum((1, 3)) / d
     mu_n = means / means.norm(dim=1, keepdim=True).clamp(min=1e-12)
-    return mu_n @ mu_n.T
+    return (1.0 + mu_n @ mu_n.T) / 2.0     # signed centroid cosine -> [0,1] affinity
 
 
 def affinity_ordered_colors(aff, K):
@@ -111,6 +112,8 @@ def affinity_ordered_colors(aff, K):
     -- so the map's legibility no longer rides on a random hue shuffle.
     """
     import matplotlib.pyplot as plt
+    if K <= 1:                                              # single cluster: no ordering
+        return plt.cm.turbo(np.array([0.5]))
     A = aff.detach().cpu().numpy() if torch.is_tensor(aff) else np.asarray(aff)
     np.fill_diagonal(A, 0.0)
     deg = A.sum(1)
@@ -184,7 +187,7 @@ def render_world_map(dominant, valid, colors, out_png, *, title="", suptitle="",
     fig = plt.figure(figsize=(13, 6.2))
     ax = fig.add_subplot(1, 1, 1, projection="mollweide")
 
-    if heatmap:
+    if heatmap and v.any():          # need >=1 valid cell to triangulate; else grey frame
         src = np.column_stack([lon[v], lat[v]])
         vals = colors[dom[v]][:, :3]                         # RGB at data cells
         glon = np.arange(-180.0, 180.0, grid_deg)

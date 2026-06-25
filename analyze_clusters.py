@@ -138,7 +138,7 @@ def main():
     add(f"- **{between / total:.1%}** between clusters (the means alone — how much "
         f"cluster identity explains)")
     if d > 0:
-        add(f"- **{captured / total:.1%}** within clusters, captured by the top-{d} subspace directions")
+        add(f"- **{captured / total:.1%}** captured within clusters by the top-{d} subspace directions")
         add(f"- **{resid / total:.1%}** residual (unexplained by the model)")
         frac = eig.cumsum(1) / eig.sum(1, keepdim=True).clamp(min=1e-12)
         d80 = (frac < 0.8).sum(1) + 1
@@ -193,10 +193,16 @@ def main():
 
     dec = fid * 10 // N_FILES_TOTAL                        # time decile by file index
     decK = torch.bincount(dec * K + lab, minlength=10 * K).view(10, K).float()
-    dec_tot = decK.sum(1, keepdim=True)
-    # clamp guards an empty saved cluster (cnt==0 -> 0/0 -> NaN temp_cv).
-    enrich = (decK / cnt.clamp(min=1)) / (dec_tot / T)     # 1.0 = temporally flat
-    temp_cv = enrich.std(0) / enrich.mean(0).clamp(min=1e-12)
+    dec_tot = decK.sum(1, keepdim=True)                    # 0 for an empty (unsampled) decile
+    # nan marks an empty decile; temp_cv is taken over populated deciles only, so a sparse
+    # sample can't fabricate a temporal signal. (cnt.clamp guards an empty cluster; the
+    # decile divisor is clamped separately so an empty decile -> 0, then masked to nan.)
+    dden = (dec_tot / T).clamp(min=1e-12)
+    raw = (decK / cnt.clamp(min=1)) / dden
+    enrich = torch.where(dec_tot > 0, raw, torch.full_like(raw, float("nan")))
+    enr_np = enrich.numpy()
+    temp_cv = torch.tensor(np.nanstd(enr_np, axis=0) /
+                           np.nanmean(enr_np, axis=0).clip(1e-12))
 
     radius = m.get("radius")
 
@@ -221,8 +227,9 @@ def main():
         row = [f"{j}", f"{int(cnt[j]):,}", f"{float(w[j]):.1%}"]
         if d > 0:
             row += [f"{float(evr[j]):.3f}", f"{int(d80[j])}"]
+        tcv = float(temp_cv[j])
         row += [f"{int(cells50[j])}", f"{int(owned[j])}", f"{float(files_pct[j]):.0%}",
-                f"{float(temp_cv[j]):.2f}"]
+                ("–" if tcv != tcv else f"{tcv:.2f}")]
         if radius is not None:
             row += [f"{float(radius[j]):.2f}"]
         add("| " + " | ".join(row) + " |")

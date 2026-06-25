@@ -178,7 +178,7 @@ python3 temporal_spatial.py --dir subspace_kmeans_runs/v6_subspace_big_d64
 
 It reconstructs each file's calendar month from `datetime = 2014-01-01 00:00 + idx×6h` and
 reuses the run's **existing** `assignments.pt` (v6 covers all 12,288 cells in every
-calendar month, ~540–620 files/month) — so there is **no recomputation**: it's a ~10 s
+calendar month, ~528–623 files/month) — so there is **no recomputation**: it's a ~10 s
 rendering/reporting pass. For a run that under-samples some month, re-cluster with more
 `--num-files` and re-run.
 
@@ -197,7 +197,7 @@ python3 holdout_eval.py --dir subspace_kmeans_runs/v6_subspace_big_d64 --num-fil
 ```
 
 Writes `<dir>/holdout.json`; the next `analyze_clusters.py` run renders a **Held-out
-generalization** section from it automatically. (v6, d=64: held-out 31.3% vs in-sample
+generalization** section from it automatically. (v6, d=64: held-out 31.5% vs in-sample
 31.5% — the subspaces generalise.)
 
 ### Chained run (fire and forget)
@@ -213,7 +213,7 @@ nohup bash -c "python3 subspace_kmeans.py --num-files 7000 --clusters 128 --dim 
 ## Results so far
 
 Runs live under `subspace_kmeans_runs/`, each in a `vI_<name>` directory numbered in
-chronological order (v1 → v5 below).
+chronological order (v1 → v6 below).
 
 - `v1_subspace_out/` — first full run (1500 files, K=64, d=16,
   6.7 min). Key findings: clusters are **spatially localized but temporally universal**
