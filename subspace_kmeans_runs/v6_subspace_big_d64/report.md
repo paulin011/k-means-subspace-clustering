@@ -1,6 +1,6 @@
 # Clustering report (subspace_kmeans) — `subspace_kmeans_runs/v6_subspace_big_d64`
 
-*Generated 2026-06-25 15:49 by `analyze_clusters.py`. K=128 affine subspaces of dim 64 in 2048-dim token space, 86,016,000 tokens.*
+*Generated 2026-06-25 16:53 by `analyze_clusters.py`. K=128 affine subspaces of dim 64 in 2048-dim token space, 86,016,000 tokens.*
 
 ## Configuration
 
@@ -218,6 +218,16 @@ Spatial columns are over the 12288 HEALPix cells with data; `cells@50%` = number
 | 38 | 235,351 | 0.3% | 0.641 | 40 | 18 | 33 | 100% | 0.03 |
 | 28 | 227,886 | 0.3% | 0.729 | 34 | 17 | 27 | 100% | 0.04 |
 
+## Temporal & spatial analysis
+
+The world map, 12 monthly dominant-cluster maps, and seasonal profiles live in the dedicated **temporal & spatial report** (`temporal_spatial.py`), read at calendar (monthly) resolution with continent outlines and a smooth heatmap — clearer than a single 12,288-pixel map. Generate it from this run's frozen model + assignments:
+
+  ```bash
+  python3 temporal_spatial.py --dir subspace_kmeans_runs/v6_subspace_big_d64 --out subspace_kmeans_runs/v6_subspace_big_d64/temporal_report.md
+  ```
+
+The per-cluster `cells@50%` / `owned` / `files` / `tCV` columns above are the compact in-report summary of that same spatial/temporal structure; see `subspace_kmeans_runs/v6_subspace_big_d64/temporal_report.md`.
+
 ## Subspace affinity between clusters
 
 Affinity(i,j) = ‖Uᵢᵀ·Uⱼ‖²_F / 64 ∈ [0,1]: mean squared cosine of the principal angles between the two subspaces (1 = identical span, 0 = orthogonal). High-affinity pairs are candidates for merging (K may be too large); uniformly low values mean genuinely distinct regimes.
@@ -239,30 +249,9 @@ Off-diagonal affinity: median 0.419, mean 0.432, max 0.805.
 | 10 ↔ 59 | 0.777 | 0.617 |
 | 58 ↔ 86 | 0.773 | 0.538 |
 
-## Most time-varying clusters
-
-Enrichment of each cluster per time decile of the dataset (file index 0…13020; 1.00 = the cluster's average rate). Values ≫1 mark the periods where the cluster concentrates — a strong seasonal/temporal signature.
-
-| cluster | tCV | D0 | D1 | D2 | D3 | D4 | D5 | D6 | D7 | D8 | D9 |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| 67 | 0.21 | 0.92 | 1.04 | 1.41 | 1.06 | 0.93 | 1.29 | 1.00 | 0.87 | 0.71 | 0.85 |
-| 100 | 0.19 | 0.98 | 1.09 | 1.33 | 0.98 | 0.98 | 1.19 | 1.11 | 0.83 | 0.70 | 0.78 |
-| 126 | 0.17 | 0.96 | 0.72 | 0.82 | 0.96 | 1.00 | 0.90 | 1.04 | 1.20 | 1.11 | 1.27 |
-| 48 | 0.16 | 0.99 | 1.05 | 1.28 | 1.16 | 0.94 | 1.07 | 1.06 | 0.86 | 0.86 | 0.72 |
-| 64 | 0.15 | 0.96 | 1.02 | 1.07 | 1.26 | 1.16 | 1.10 | 1.05 | 0.88 | 0.76 | 0.82 |
-| 75 | 0.15 | 1.08 | 1.16 | 0.87 | 0.79 | 0.84 | 0.98 | 1.26 | 0.98 | 1.03 | 0.90 |
-| 24 | 0.15 | 1.05 | 1.01 | 0.87 | 0.79 | 0.81 | 0.92 | 1.08 | 1.11 | 1.21 | 1.16 |
-| 82 | 0.15 | 1.04 | 1.00 | 0.81 | 0.81 | 0.86 | 0.94 | 1.05 | 1.14 | 1.19 | 1.19 |
-
-## World map
-
-![Dominant cluster per HEALPix cell](dominant_cluster_map.png)
-
-Each of the 12,288 HEALPix cells is colored by its most frequent cluster (grey = no data). Cell indices use **NESTED HEALPix ordering** (confirmed: geographically coherent continent-scale regions appear under NESTED, incoherent stripes under RING). Colors are assigned by spectral ordering of the subspace-affinity matrix, so similar clusters share similar hues — real regions read as smooth gradients, genuine noise stays speckled.
-
 ## Interpretation notes
 
 - *Localized + present in ~100% of files* (low `cells@50%`, `files` ≈ 100%) ⇒ the cluster is a **geographic regime** (region/surface type), stable in time.
-- *High `tCV` with smooth decile profile* ⇒ **seasonal or trend** behaviour; check the decile table above.
+- *High `tCV`* ⇒ **seasonal or trend** behaviour; see the monthly profiles in the temporal & spatial report (`temporal_spatial.py`).
 - *EVR near the global average with d80 ≈ d* ⇒ the subspace dimension truncates the spectrum; re-run with larger `--dim` to capture more structure.
 - Subspace bases live in `model.pt['U']` `[K, 2048, d]` (orthonormal columns, descending eigenvalue order); project tokens with `(x-μ_j) @ U_j`.

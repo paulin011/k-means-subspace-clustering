@@ -5,6 +5,13 @@ The dataset (`latents_2/`, 1.2 TB) holds 13,021 files `latent_{i}.pt`, one per s
 (time step), each a dict `{idx: int64 scalar, latent: float32 [1, 12288, 2048]}` —
 12,288 HEALPix cells (nside=32, **NESTED ordering**) × 2048-dim token per cell, ≈160 M tokens total.
 
+**Time axis:** the files are ERA5 states at **6-hourly cadence (4/day: 00/06/12/18 UTC)**.
+Each file stores only an integer `idx` (its sample index), **not a timestamp**, so the
+calendar date is reconstructed positionally as `datetime = 2014-01-01 00:00 UTC + idx×6h`
+(file 0 = 2014-01-01 00:00; file 13020 = 2022-11-30 00:00 — a full 9-year 2014→2022 ERA5
+range would run to 2022-12-31 18:00, ~127 more steps, so the last ~month of 2022 is not
+fully covered). `temporal_spatial.py` groups files into calendar months this way.
+
 ## Scripts
 
 ### `cluster_io.py` — shared sampling/IO for all clustering algorithms
@@ -117,32 +124,63 @@ case). Turns a result directory into a self-describing report (`report.md`):
 configuration, convergence table, global variance decomposition (between-cluster /
 subspace-captured / residual), a per-cluster table (size, spatial concentration over
 HEALPix cells, temporal coverage and variation, plus EVR/effective-dimensionality when
-`d>0`, plus k-center's `radius` when present), pairwise subspace affinity (`d>0` only —
-mean squared principal-angle cosines, flags merge candidates), and temporal enrichment
-profiles of the most time-varying clusters.
+`d>0`, plus k-center's `radius` when present), and pairwise subspace affinity (`d>0`
+only — mean squared principal-angle cosines, flags merge candidates).
 
 ```bash
 python3 analyze_clusters.py --dir subspace_kmeans_runs/v1_subspace_out \
     --out subspace_kmeans_runs/v1_subspace_out/report.md
 ```
 
-Every metric in the generated `report.md` — convergence, variance decomposition,
-per-cluster spatial/temporal stats, subspace affinity, the world map — is defined and
-interpreted in **[METRICS.md](METRICS.md)**.
+The **world map and the temporal/seasonal analysis live in a separate report** — see
+`temporal_spatial.py` below; `analyze_clusters.py` keeps the compact per-cluster
+spatial/temporal columns and a pointer to `temporal_report.md`. Every metric in
+`report.md` is defined and interpreted in **[METRICS.md](METRICS.md)**.
 
-It also renders `dominant_cluster_map.png`: a Mollweide world map of the dominant
-cluster per cell under NESTED ordering (pure-numpy HEALPix geometry, no healpy needed).
-The encoder is confirmed to use NESTED cell indexing — geographically coherent continent-
-scale regions appear under NESTED, incoherent stripes under RING. Cells are colored by
-**spectral seriation of the subspace-affinity matrix** (or, for `d=0` point clusters,
-centroid-cosine affinity) via Fiedler-vector order through the `turbo` colormap, so
-similar clusters get similar colors: real structure reads as smooth gradients while
-genuine noise stays speckled — this avoids the false "scatter" a random hue shuffle
-produces at large K. Use the script's `healpix_nest2ring` + `healpix_ring_lonlat` helpers
-to map any cell id to lat/lon. These pure-numpy helpers are validated (data-free):
-`nest2ring` is a bijection of `[0, 12288)`, lon/lat are clean (lat ∈ [−88.5°, 88.5°],
-no NaN/inf), and the equal-area cell distribution matches analytics (50.0% of cells at
-|lat| < 30°; 13.7% at |lat| > 60° vs 13.4% theoretical).
+### `worldmap.py` — shared HEALPix geometry, cluster coloring, and map renderer
+
+Imported by both `analyze_clusters.py` and `temporal_spatial.py`, so the two reports
+share one geometry, one cluster-color assignment, and one map renderer:
+
+- Pure-numpy `healpix_nest2ring` / `healpix_ring_lonlat` — cell id → lon/lat (no healpy).
+  Validated data-free: `nest2ring` is a bijection of `[0, 12288)`, lon/lat are clean
+  (lat ∈ [−88.5°, 88.5°]), and the equal-area cell distribution matches analytics (50.0%
+  at |lat|<30°; 13.7% at |lat|>60° vs 13.4% theoretical).
+- `build_affinity_matrix` (subspace affinity for `d>0`, centroid cosine for `d=0`) and
+  `affinity_ordered_colors` — **spectral seriation** of the affinity matrix via its Fiedler
+  vector, mapped through the `turbo` colormap, so subspace-similar clusters get similar
+  hues. Real structure then reads as smooth gradients, not the false "scatter" a random
+  hue shuffle produces at large K.
+- `get_coastlines()` — fetches + caches the Natural Earth 110m coastline GeoJSON (parsed
+  with stdlib `json`; no cartopy/shapely, which aren't installed on this box).
+- `render_world_map()` — a Mollweide map of the dominant cluster per cell with two
+  readability features: **continent outlines**, and a smooth **heatmap** (the per-cell RGB
+  is interpolated with `scipy.griddata` onto a regular grid, lightly Gaussian-smoothed, and
+  painted with `pcolormesh`) that replaces the old speckled 12,288-pixel scatter with a
+  continuous, coast-aligned field. Interpolating RGB (not the categorical cluster id) is
+  valid precisely because `affinity_ordered_colors` already makes neighbors similar. ~0.8 s/map.
+
+### `temporal_spatial.py` — temporal & spatial report
+
+Dedicated report (`temporal_report.md`) for the spatial and temporal structure at calendar
+(monthly) resolution:
+
+- an **annual** dominant-cluster world map + **12 monthly** maps (continent outlines +
+  smooth heatmap via `worldmap.py`), all on one shared color scale so months are comparable;
+- a **monthly enrichment** table flagging the most seasonal clusters (1.0 = year-round,
+  ≫1 = concentrated in those months);
+- a **month-to-month stability** curve — the share of cells whose dominant cluster flips
+  between consecutive months — plus a Jan↔Jul (winter vs summer) shift.
+
+```bash
+python3 temporal_spatial.py --dir subspace_kmeans_runs/v6_subspace_big_d64
+```
+
+It reconstructs each file's calendar month from `datetime = 2014-01-01 00:00 + idx×6h` and
+reuses the run's **existing** `assignments.pt` (v6 covers all 12,288 cells in every
+calendar month, ~540–620 files/month) — so there is **no recomputation**: it's a ~10 s
+rendering/reporting pass. For a run that under-samples some month, re-cluster with more
+`--num-files` and re-run.
 
 ### `holdout_eval.py` — generalization check on unseen files
 
@@ -217,6 +255,11 @@ chronological order (v1 → v5 below).
   fixed the degenerate cluster. **This is the recommended config**: d=64 captures the
   within-cluster structure without the singleton degeneracy and washed-out cluster identity
   (between-cluster share) that d=128 causes.
+- The **temporal & spatial report** (`temporal_spatial.py` → `temporal_report.md`) breaks
+  v6 down by calendar month: clusters 24/82/73/104 peak in NH summer, 7/29/67 in winter;
+  month-to-month dominant-cluster flips range 6.2% (Jul→Aug) to 21.5% (Apr→May), and
+  Jan↔Jul differ in 45% of cells — a clear hemispheric seasonal cycle. Maps reuse v6's
+  existing assignments (no re-clustering).
 
 ## Hardware notes (this machine)
 

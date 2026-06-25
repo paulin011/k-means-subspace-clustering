@@ -14,6 +14,15 @@ below mirror the sections of the generated `report.md`.
   Used as the weighting for every "count-weighted" average, so large clusters dominate
   global figures.
 
+## Time axis
+
+The files are ERA5 states at **6-hourly cadence** (00/06/12/18 UTC — 4/day). Each stores
+only an integer sample index (`idx`), not a timestamp, so the calendar date is
+**reconstructed positionally**: `datetime = 2014-01-01 00:00 UTC + idx×6h`. The 13,021
+files therefore span 2014-01-01 00:00 → 2022-11-30 00:00 (a full 9-yr 2014→2022 range would
+reach 2022-12-31 18:00, ~127 more steps; the last ~month of 2022 is not fully covered).
+Every calendar-month / seasonal metric below groups files by this reconstructed date.
+
 ## Convergence table
 
 Per-iteration optimization history:
@@ -110,12 +119,14 @@ One row per cluster:
 How the spatial/temporal stats are built:
 
 - `cell_counts` `[N_CELLS, K]` — token counts per (cell, cluster).
-- `dominant` — argmax cluster per cell (also drives the world map).
+- `dominant` — argmax cluster per cell (drives the `owned` territory count; the full maps
+  are in the temporal & spatial report).
 - `cells@50%` — from each cluster's sorted-descending cumulative distribution across cells
   (the cells holding the first 50%).
 - `enrich` `[10, K]` = `(decK / counts) / (dec_tot / T)` — ratio of a cluster's observed
   share in a time decile to its expected share if temporally flat. **1.0 = flat**, ≫ 1 =
-  concentrated there. The decile is derived from the global file index (0…13020).
+  concentrated there. The decile is derived from the global file index (0…13020). (The
+  temporal report uses the 12-month analogue of this for its seasonal profiles.)
 
 ## Subspace affinity between clusters (`d > 0` only)
 
@@ -130,26 +141,33 @@ How the spatial/temporal stats are built:
 
 For `d = 0` this section is skipped (point clusters have no basis to compare).
 
-## Most time-varying clusters
+## Temporal & spatial report (`temporal_report.md`)
 
-The top clusters by `tCV`, each with its full **D0…D9 enrichment profile** across the 10
-time deciles (same `enrich` values; 1.00 = the cluster's average rate). A smooth ramp/peak
-across deciles indicates seasonal or trend behavior rather than noise.
+The world map and the temporal/seasonal analysis moved out of the main report into a
+dedicated `temporal_spatial.py` report. (The main report keeps the per-cluster `tCV` /
+`files` columns — a compact temporal summary — and points here.) All maps share one color
+scale from `affinity_ordered_colors` (spectral seriation of the affinity matrix → `turbo`,
+so similar clusters share hues); the renderer (`worldmap.py`) adds **continent outlines**
+(cached Natural Earth 110m coastlines) and a smooth **heatmap** — the per-cell RGB is
+interpolated (`scipy.griddata`, linear + nearest-fill) onto a regular grid and
+Gaussian-smoothed, then painted with `pcolormesh`, replacing the old speckled 12,288-pixel
+scatter with a continuous, coast-aligned field. Interpolating RGB (not the categorical
+cluster id) is valid because the colormap already makes neighbors similar. (The absolute hue
+is arbitrary — it reflects only a cluster's rank in the Fiedler similarity order, with no
+physical meaning; only the *transitions/groupings* carry information. The generated report's
+"How the colors work" section spells out the full pipeline.)
 
-## World map (`dominant_cluster_map.png`)
-
-A Mollweide projection coloring each of the 12,288 cells by its dominant cluster
-(grey = no data), under **NESTED HEALPix ordering** (confirmed: geographically coherent
-continent-scale regions under NESTED, incoherent stripes under RING). Colors come from
-`affinity_ordered_colors`:
-
-- build the K×K affinity matrix (subspace affinity for `d > 0`, else centroid cosine),
-- take the **Fiedler vector** (2nd-smallest eigenvector of the normalized graph Laplacian)
-  for 1-D spectral seriation, then map that ordering through the `turbo` colormap.
-
-Effect: subspace-similar clusters get similar hues, so genuine spatial structure reads as
-smooth gradients and only true noise stays speckled — legibility no longer rides on a
-random hue shuffle (which falsely aliases finer sub-regions as "scatter" at large K).
+- **Annual map** (`maps/map_annual.png`) — dominant cluster per cell across the full sample
+  (NESTED ordering; grey = no data).
+- **Monthly maps** (`maps/map_month_01.png` … `maps/map_month_12.png`) — dominant cluster per
+  cell for each calendar month (grouped by the reconstructed date). Built from the run's
+  existing `assignments.pt`, so no re-clustering.
+- **Monthly enrichment** (table) — per cluster, `(share in month) / (average share)` for each
+  of the 12 months. **1.0 = year-round**; ≫1 = concentrated in those months (a seasonal
+  signature). Supersedes the old 10-decile table; `seasonality` = std/mean across months.
+- **Month-to-month flip rate** — share of cells whose dominant cluster changes between
+  consecutive months (low = stable geography; peaks = seasonal transitions). Plus a
+  **Jan↔Jul** shift (winter vs summer) and the largest owned-cell-count deltas.
 
 ## Token sample / Configuration (not metrics)
 
