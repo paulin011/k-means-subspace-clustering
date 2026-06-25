@@ -1,13 +1,13 @@
 # Clustering report (subspace_kmeans) — `subspace_kmeans_runs/v6_subspace_big_d64`
 
-*Generated 2026-06-25 15:30 by `analyze_clusters.py`. K=128 affine subspaces of dim 64 in 2048-dim token space, 86,016,000 tokens.*
+*Generated 2026-06-25 15:49 by `analyze_clusters.py`. K=128 affine subspaces of dim 64 in 2048-dim token space, 86,016,000 tokens.*
 
 ## Configuration
 
 | parameter | value |
 |---|---|
 | src | latents_2 |
-| num_files | 1500 |
+| num_files | 7000 *(--files-from reused the sample; --num-files=1500 ignored)* |
 | tokens_per_file | 12288 |
 | clusters | 128 |
 | dim | 64 |

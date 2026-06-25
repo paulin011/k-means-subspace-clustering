@@ -1,13 +1,13 @@
-# Subspace clustering report — `subspace_big_i100`
+# Clustering report (subspace_kmeans) — `subspace_kmeans_runs/v3_subspace_big_i100`
 
-*Generated 2026-06-12 15:22 by `analyze_subspaces.py`. K=128 affine subspaces of dim 32 in 2048-dim token space, 86,016,000 tokens.*
+*Generated 2026-06-25 15:52 by `analyze_clusters.py`. K=128 affine subspaces of dim 32 in 2048-dim token space, 86,016,000 tokens.*
 
 ## Configuration
 
 | parameter | value |
 |---|---|
 | src | latents_2 |
-| num_files | 700 |
+| num_files | 7000 *(--files-from reused the sample; --num-files=1500 ignored)* |
 | tokens_per_file | 12288 |
 | clusters | 128 |
 | dim | 32 |
@@ -23,13 +23,13 @@
 
 - **Sample fingerprint:** `82ca602ed7e7` — runs sharing this fingerprint were clustered on the identical token set and are directly comparable.
 - **Files:** 7000 latent files, 12288 tokens each, seed 0.
-- **Reproduce this exact sample** for a new run (e.g. to vary K or d):
+- **Reproduce this exact sample** for a new run, with this or any other `cluster_io.py`-based script (e.g. to vary K, d, or the algorithm itself):
 
   ```bash
-  python3 subspace_kmeans.py --files-from subspace_big_i100/sample.json --seed 0 --tokens-per-file 12288 \
-      --clusters <K> --dim <d> --out <new_dir>
+  python3 subspace_kmeans.py --files-from subspace_kmeans_runs/v3_subspace_big_i100/sample.json --seed 0 --tokens-per-file 12288 \
+      --clusters <K> --out <new_dir>
   ```
-- File ids (first 20 of 7000, full list in `subspace_big_i100/sample.json`): 0, 1, 6, 8, 9, 10, 11, 12, 13, 14, 16, 18, 19, 21, 22, 24, 25, 26, 27, 28 …
+- File ids (first 20 of 7000, full list in `subspace_kmeans_runs/v3_subspace_big_i100/sample.json`): 0, 1, 6, 8, 9, 10, 11, 12, 13, 14, 16, 18, 19, 21, 22, 24, 25, 26, 27, 28 …
 
 ## Convergence
 
@@ -144,7 +144,7 @@ Total token variance E‖x−μ_global‖² = **5998**, split into:
 - **45.3%** within clusters, captured by the top-32 subspace directions
 - **44.5%** residual (unexplained by the model)
 
-Count-weighted within-cluster EVR(top-32): **0.513**. Dimensions needed for 80% of captured variance: min 17 / median 20 / max 22 (close to 32 ⇒ flat spectrum, consider larger --dim).
+Count-weighted within-cluster EVR(top-32): **0.513**. Dimensions needed for 80% of captured variance: min 17 / median 20 / max 22 (d80 is capped at d+1=33: a cluster reaching that value never hits 80% even using all 32 kept directions).
 
 ## Clusters (sorted by size)
 
@@ -321,7 +321,7 @@ Enrichment of each cluster per time decile of the dataset (file index 0…13020;
 
 ![Dominant cluster per HEALPix cell](dominant_cluster_map.png)
 
-Each of the 12,288 HEALPix cells is colored by its most frequent cluster (grey = no data). Cell indices use **NESTED HEALPix ordering** (confirmed: geographically coherent continent-scale regions appear under NESTED, incoherent stripes under RING). Colors are assigned by spectral ordering of the subspace-affinity matrix, so subspace-similar clusters share similar hues — real regions read as smooth gradients, genuine noise stays speckled.
+Each of the 12,288 HEALPix cells is colored by its most frequent cluster (grey = no data). Cell indices use **NESTED HEALPix ordering** (confirmed: geographically coherent continent-scale regions appear under NESTED, incoherent stripes under RING). Colors are assigned by spectral ordering of the subspace-affinity matrix, so similar clusters share similar hues — real regions read as smooth gradients, genuine noise stays speckled.
 
 ## Interpretation notes
 

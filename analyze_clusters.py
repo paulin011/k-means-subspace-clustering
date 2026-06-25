@@ -178,6 +178,7 @@ def main():
     lab, cell, fid = a["label"].long(), a["cell_id"].long(), a["file_id"].long()
     T = lab.numel()
     w = cnt / cnt.sum()
+    sampled_files = list(m.get("sampled_files", []))   # actual files used (ground truth)
 
     method = cfg.get("method", "subspace_kmeans")
     L = []
@@ -195,13 +196,20 @@ def main():
     add("|---|---|")
     for key in ["src", "num_files", "tokens_per_file", "clusters", "dim",
                 "iters", "tol", "linear", "seed", "chunk_size", "gpus"]:
-        if key in cfg:
+        if key == "num_files":
+            # cfg["num_files"] is the --num-files ARG, which --files-from ignores, so for
+            # runs that reuse a previous sample it can be a stale default (e.g. 1500).
+            # Report the actual file count from sampled_files and flag the override.
+            arg = cfg.get("num_files")
+            note = (f" *(--files-from reused the sample; --num-files={arg} ignored)*"
+                    if cfg.get("files_from") else "")
+            add(f"| num_files | {len(sampled_files)}{note} |")
+        elif key in cfg:
             add(f"| {key} | {cfg[key]} |")
     add(f"| tokens analyzed | {T:,} |")
 
     # ---- Token sample (reproducibility / cross-run comparison) --------------
     add("\n## Token sample\n")
-    sampled_files = list(m.get("sampled_files", []))
     fp = m.get("sample_fingerprint")
     if fp is None and sampled_files:                       # older runs predate the field
         h = hashlib.sha1()
