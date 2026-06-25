@@ -245,7 +245,6 @@ def main():
         add(f"\nCount-weighted within-cluster EVR(top-{d}): **{float((w * evr).sum()):.3f}**. "
             f"Dimensions needed for 80% of captured variance: "
             f"min {int(d80.min())} / median {int(d80.median())} / max {int(d80.max())} "
-            f"(close to {d} ⇒ flat spectrum, consider larger --dim).")
     else:
         add(f"- **{resid / total:.1%}** residual, i.e. within-cluster (point clusters: "
             f"no subspace basis, so nothing beyond the centroid is captured)")

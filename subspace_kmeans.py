@@ -155,18 +155,38 @@ def update_model(moments, data, K, d, affine, seed_gen, device):
     U = evecs[..., DIM - d:].flip(-1).contiguous()       # [K, DIM, d], descending
     eigvals = evals[..., DIM - d:].flip(-1).clamp_min(0)
 
-    # Re-seed clusters too small to support a d-dim basis: mean = random token,
-    # zero basis, so the next assignment captures that token's neighbourhood.
+    # Re-seed clusters too small to support a d-dim basis. A fresh point-seed
+    # (U=0) cannot out-compete the other clusters' d-dim subspaces -- its residual
+    # is the full ||x-mu||^2 while theirs is tiny -- so at large d a collapsed
+    # cluster never recovers (observed: d=64 strands 1 cluster, d=128 strands 2 at
+    # size 1 every iteration). Instead we *split the largest healthy cluster* along
+    # its top principal axis: both halves inherit that cluster's subspace and are
+    # offset by +/-1 std along PC1, so the next assignment partitions the parent's
+    # tokens between them. This keeps all K subspaces populated even at large d.
+    # d=0 (plain k-means) has no subspace to split, so it keeps the random-token
+    # re-seed (the validated path).
     min_count = max(2 * d, 64)
-    for j in (cnt < min_count).nonzero().flatten().tolist():
-        print(f"  re-seeding cluster {j} (size {int(cnt[j])})", flush=True)
-        t = int(torch.randint(data.shape[0], (1,), generator=seed_gen))
-        if affine:
-            means[j] = data[t].to(device).float()
-            U[j] = 0
-        else:
-            U[j] = torch.linalg.qr(torch.randn(DIM, d, generator=seed_gen).to(device))[0]
-        eigvals[j] = 0
+    tiny = (cnt < min_count).nonzero().flatten().tolist()
+    if tiny:
+        order = torch.argsort(cnt, descending=True).tolist()
+        donors = [p for p in order if cnt[p] >= 2 * min_count]   # large, splittable
+        for i, j in enumerate(tiny):
+            print(f"  re-seeding cluster {j} (size {int(cnt[j])})", flush=True)
+            if affine and d > 0 and i < len(donors):
+                p = donors[i]
+                delta = U[p][:, 0] * eigvals[p][0].clamp_min(0).sqrt()  # 1 std along PC1
+                means[j] = means[p] - delta
+                means[p] = means[p] + delta
+                U[j] = U[p].clone()
+                eigvals[j] = eigvals[p].clone()
+            else:                                                  # k-means / no donor
+                t = int(torch.randint(data.shape[0], (1,), generator=seed_gen))
+                if affine:
+                    means[j] = data[t].to(device).float()
+                    U[j] = 0
+                else:
+                    U[j] = torch.linalg.qr(torch.randn(DIM, d, generator=seed_gen).to(device))[0]
+                eigvals[j] = 0
     return {"U": U.cpu(), "means": means.cpu(), "eigvals": eigvals.cpu(),
             "trace": trace.cpu(), "counts": cnt.to("cpu", torch.int64)}
 

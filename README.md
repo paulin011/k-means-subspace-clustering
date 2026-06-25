@@ -55,7 +55,13 @@ Algorithm details:
   because the covariances are cheap to accumulate on GPU during the sweep.
 - **Init**: K random tokens as seeds with zero bases (first pass = nearest-seed k-means
   step). A random partition does *not* work — all K bases collapse onto the global PCA.
-- Tiny/empty clusters are re-seeded from random tokens automatically.
+- **Tiny/empty clusters are re-seeded by splitting the largest healthy cluster** along
+  its top principal axis (both halves inherit that cluster's subspace, offset ±1 std
+  along PC1). A plain random-token re-seed (`U=0`) cannot recover at large `d` — a fresh
+  point-seed has residual `‖x−μ‖²` while every rival owns a `d`-dim subspace with near-zero
+  residual, so it never wins more than its one starter token (observed: `d=64` strands 1
+  cluster, `d=128` strands 2 at size 1 forever). The split keeps all K subspaces populated.
+  The `d=0` (plain k-means) path has no subspace to split, so it keeps the random-token re-seed.
 
 Token selection: `--num-files` files drawn uniformly at random, `--tokens-per-file`
 random cells from each (default: all 12,288). Every file covers the whole globe, so
@@ -117,6 +123,10 @@ python3 analyze_clusters.py --dir subspace_kmeans_runs/v1_subspace_out \
     --out subspace_kmeans_runs/v1_subspace_out/report.md
 ```
 
+Every metric in the generated `report.md` — convergence, variance decomposition,
+per-cluster spatial/temporal stats, subspace affinity, the world map — is defined and
+interpreted in **[METRICS.md](METRICS.md)**.
+
 It also renders `dominant_cluster_map.png`: a Mollweide world map of the dominant
 cluster per cell under NESTED ordering (pure-numpy HEALPix geometry, no healpy needed).
 The encoder is confirmed to use NESTED cell indexing — geographically coherent continent-
@@ -172,7 +182,17 @@ chronological order (v1 → v5 below).
 - `v5_subspace_big_d128/` — same sample as v2 (fingerprint `82ca602ed7e7`), K=128, d=128.
   EVR(top-128) reached 0.816, residual down to 17.8%; d80 (min/median/max 47/63/129) is
   again close to d, so within-cluster structure is still not fully captured even at
-  d=128.
+  d=128. **Note:** 2 clusters were stranded at size 1 — a degeneracy of large `d` with the
+  old random-token re-seed, *not* of large K (d=32 at the same K is singleton-free); see v6.
+- `v6_subspace_big_d64/` — **supersedes v4**: identical config (same sample, K=128, d=64)
+  but with the split-largest re-seed guard. The one cluster v4 stranded at size 1 is
+  rescued: all 128 clusters healthy (min 227,886 tokens), and `max d80` drops 65→**40**
+  (every cluster now needs ≤40 of its 64 dims for 80% of captured variance — the spectrum
+  is no longer truncated, unlike d=32 where d80≈d). Variance decomposition is otherwise
+  identical to v4 (8.4% between / 60.1% within / 31.5% residual), confirming the guard only
+  fixed the degenerate cluster. **This is the recommended config**: d=64 captures the
+  within-cluster structure without the singleton degeneracy and washed-out cluster identity
+  (between-cluster share) that d=128 causes.
 
 ## Hardware notes (this machine)
 
