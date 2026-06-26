@@ -1,6 +1,6 @@
-# Temporal & spatial report — `subspace_kmeans_runs/v6_subspace_big_d64`
+# Temporal & spatial report — `subspace_kmeans_runs/v8_seed2_d64`
 
-*Generated 2026-06-25 21:23 by `temporal_spatial.py`. K=128 affine subspaces (d=64), 86,016,000 tokens from 7000 files. Maps reuse this run's existing assignments (no recomputation).*
+*Generated 2026-06-26 03:17 by `temporal_spatial.py`. K=128 affine subspaces (d=64), 86,016,000 tokens from 7000 files. Maps reuse this run's existing assignments (no recomputation).*
 
 ## Time axis
 
@@ -90,34 +90,34 @@ Enrichment of each cluster per month = `(cluster share in month) / (its average 
 
 | cluster | seasonality | Jan | Feb | Mar | Apr | May | Jun | Jul | Aug | Sep | Oct | Nov | Dec |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| 24 | 1.13 | 0.00 | 0.00 | 0.01 | 0.08 | 0.79 | 2.27 | 2.75 | 2.79 | 2.10 | 0.85 | 0.12 | 0.02 |
-| 82 | 1.02 | 0.01 | 0.01 | 0.01 | 0.11 | 0.77 | 1.94 | 2.42 | 2.52 | 2.32 | 1.33 | 0.30 | 0.07 |
-| 7 | 1.01 | 2.68 | 2.96 | 2.12 | 0.97 | 0.27 | 0.16 | 0.11 | 0.09 | 0.15 | 0.27 | 0.71 | 1.65 |
-| 29 | 0.96 | 2.53 | 2.46 | 1.86 | 0.96 | 0.28 | 0.02 | 0.00 | 0.00 | 0.02 | 0.50 | 1.49 | 2.05 |
-| 73 | 0.91 | 0.05 | 0.02 | 0.04 | 0.17 | 0.73 | 1.34 | 1.87 | 2.35 | 2.47 | 1.83 | 0.77 | 0.22 |
-| 67 | 0.89 | 2.50 | 2.39 | 2.00 | 1.32 | 0.52 | 0.18 | 0.10 | 0.07 | 0.09 | 0.28 | 0.91 | 1.75 |
-| 104 | 0.89 | 0.07 | 0.03 | 0.04 | 0.21 | 0.75 | 1.48 | 1.97 | 2.37 | 2.32 | 1.61 | 0.78 | 0.25 |
-| 102 | 0.87 | 0.09 | 0.11 | 0.29 | 0.62 | 1.25 | 1.84 | 2.50 | 2.32 | 1.64 | 0.73 | 0.26 | 0.17 |
+| 55 | 1.13 | 0.00 | 0.00 | 0.02 | 0.10 | 1.18 | 2.39 | 2.57 | 2.64 | 2.30 | 0.59 | 0.01 | 0.00 |
+| 28 | 1.11 | 0.03 | 0.03 | 0.05 | 0.13 | 0.77 | 2.09 | 2.81 | 2.82 | 2.11 | 0.80 | 0.12 | 0.04 |
+| 15 | 1.10 | 0.01 | 0.00 | 0.01 | 0.05 | 0.54 | 1.78 | 2.54 | 2.70 | 2.58 | 1.30 | 0.23 | 0.05 |
+| 12 | 1.07 | 0.01 | 0.01 | 0.03 | 0.11 | 0.69 | 1.80 | 2.62 | 2.73 | 2.31 | 1.17 | 0.24 | 0.07 |
+| 108 | 1.04 | 0.01 | 0.00 | 0.02 | 0.10 | 0.86 | 2.11 | 2.47 | 2.63 | 2.18 | 1.16 | 0.23 | 0.05 |
+| 102 | 0.99 | 0.03 | 0.02 | 0.04 | 0.24 | 1.08 | 1.98 | 2.49 | 2.57 | 2.03 | 1.02 | 0.26 | 0.07 |
+| 126 | 0.93 | 2.52 | 2.43 | 1.90 | 1.15 | 0.27 | 0.02 | 0.00 | 0.00 | 0.07 | 0.59 | 1.31 | 1.89 |
+| 118 | 0.92 | 2.59 | 2.68 | 1.97 | 1.14 | 0.46 | 0.22 | 0.14 | 0.11 | 0.16 | 0.33 | 0.71 | 1.58 |
 
 ## Month-to-month stability
 
-Share of cells whose **dominant cluster changes** between consecutive months (low = stable geography; peaks mark the seasonal transitions). Over the 11 comparable month-pair(s): min **6.2%**, mean **13.0%**, max **21.5%**.
+Share of cells whose **dominant cluster changes** between consecutive months (low = stable geography; peaks mark the seasonal transitions). Over the 11 comparable month-pair(s): min **5.5%**, mean **12.7%**, max **22.2%**.
 
 | transition | cells changing dominant cluster |
 |---|---|
-| Jan→Feb | 8.2% |
-| Feb→Mar | 10.4% |
-| Mar→Apr | 13.4% |
-| Apr→May | 21.5% |
-| May→Jun | 15.3% |
-| Jun→Jul | 10.0% |
-| Jul→Aug | 6.2% |
-| Aug→Sep | 8.8% |
-| Sep→Oct | 15.3% |
-| Oct→Nov | 18.1% |
-| Nov→Dec | 15.1% |
+| Jan→Feb | 7.2% |
+| Feb→Mar | 9.1% |
+| Mar→Apr | 12.4% |
+| Apr→May | 22.2% |
+| May→Jun | 16.3% |
+| Jun→Jul | 10.3% |
+| Jul→Aug | 5.5% |
+| Aug→Sep | 8.0% |
+| Sep→Oct | 15.9% |
+| Oct→Nov | 18.9% |
+| Nov→Dec | 14.4% |
 
-**Jan ↔ Jul** (winter vs summer hemisphere): **45.0%** of cells change dominant cluster. Largest cluster shifts (owned-cell count, Jul − Jan): 82: +353, 88: +305, 6: +278, 95: +248, 24: +235 ….
+**Jan ↔ Jul** (winter vs summer hemisphere): **47.0%** of cells change dominant cluster. Largest cluster shifts (owned-cell count, Jul − Jan): 102: +356, 15: +289, 46: +286, 50: +231, 73: +208 ….
 
 ## Interpretation notes
 
@@ -126,4 +126,4 @@ Share of cells whose **dominant cluster changes** between consecutive months (lo
 - **Jan↔Jul changes concentrate in one hemisphere** ⇒ a hemispheric seasonal cycle (opposite phases north/south).
 - Monthly maps share one color scale, so a hue *appearing* in a region month-to-month is a real shift, not a recoloring.
 
-*See the main clustering report (`subspace_kmeans_runs/v6_subspace_big_d64/report.md`) for convergence, variance decomposition, per-cluster spatial/temporal columns, and subspace affinity.*
+*See the main clustering report (`subspace_kmeans_runs/v8_seed2_d64/report.md`) for convergence, variance decomposition, per-cluster spatial/temporal columns, and subspace affinity.*
