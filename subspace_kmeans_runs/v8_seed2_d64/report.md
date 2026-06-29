@@ -1,8 +1,23 @@
-# Clustering report (subspace_kmeans) — `subspace_kmeans_runs/v8_seed2_d64`
+# Clustering report (subspace_kmeans) — `/home/psaher/latents/subspace_kmeans_runs/v8_seed2_d64`
 
-*Generated 2026-06-26 03:14 by `analyze_clusters.py`. K=128 affine subspaces of dim 64 in 2048-dim token space, 86,016,000 tokens.*
+*Generated 2026-06-28 14:46 by `analyze_clusters.py`. K=128 affine subspaces of dim 64 in 2048-dim token space, 86,016,000 tokens.*
+
+## Overview
+
+The model groups the 86,016,000 sampled tokens (each a 2048-dim weather-encoder embedding) into 128 clusters, and fits a 64-dimensional flat (an *affine subspace*: a centroid plus a basis of directions) through each one. A token is assigned to whichever cluster leaves the smallest **orthogonal residual** — the part of the token that its cluster's subspace cannot reconstruct.
+
+The core quantities, defined once here:
+
+- **μⱼ** (`model['means'][j]`): the centroid (mean token) of cluster *j*.
+- **Uⱼ** (`model['U'][j]`, shape `[2048, 64]`): an orthonormal basis for cluster *j*'s subspace; its columns are PC directions in descending eigenvalue order.
+- **Orthogonal residual** of a token *x* under cluster *j*: `‖x − μⱼ‖² − ‖Uⱼᵀ(x − μⱼ)‖²`. The first term is the squared distance to the centroid; the second is the part of that distance the subspace *captures*. What's left is the unexplained residual that the assignment minimises.
+- **eigvals** (`model['eigvals'][j]`): the top-64 eigenvalues of cluster *j*'s within-cluster covariance — variance along each kept PC direction.
+- **trace** (`model['trace'][j]`): mean squared distance of cluster *j*'s tokens to its centroid μⱼ — the cluster's total within-cluster variance.
+- **counts** (`model['counts'][j]`): number of tokens in cluster *j*; **wⱼ = counts[j] / Σcounts** is its population share, used to weight every global average.
 
 ## Configuration
+
+*How to read this: these are the run's input settings, taken from `model['config']` (plus `model['sampled_files']` for the true file count). `clusters` is K, `dim` is the subspace dimension d (`dim=0` ⇒ plain k-means). `iters` is the maximum number of training iterations (each one reassigns every token to its best cluster, then refits the centroids and subspaces); `tol` is the convergence threshold: once the fraction of tokens that change cluster in an iteration falls below it, the run stops early instead of using all `iters`. Together they bound how long the run takes. `seed` fixes both the token sample and the cluster initialisation so a run is reproducible.*
 
 | parameter | value |
 |---|---|
@@ -21,17 +36,21 @@
 
 ## Token sample
 
-- **Sample fingerprint:** `aa5126ce3e0d` — runs sharing this fingerprint were clustered on the identical token set and are directly comparable.
+*How to read this: the model was fit on tokens sampled from a subset of the 13021 latent files. The **fingerprint** is a hash of (tokens-per-file, seed, sorted file ids): two runs with the same fingerprint saw the identical token set and so their metrics can be compared directly. Use the reproduce command to fit a new K or d on exactly these tokens.*
+
+- **Sample fingerprint:** `aa5126ce3e0d`
 - **Files:** 7000 latent files, 12288 tokens each, seed 2.
 - **Reproduce this exact sample** for a new run, with this or any other `cluster_io.py`-based script (e.g. to vary K, d, or the algorithm itself):
 
   ```bash
-  python3 subspace_kmeans.py --files-from subspace_kmeans_runs/v8_seed2_d64/sample.json --seed 2 --tokens-per-file 12288 \
+  python3 subspace_kmeans.py --files-from /home/psaher/latents/subspace_kmeans_runs/v8_seed2_d64/sample.json --seed 2 --tokens-per-file 12288 \
       --clusters <K> --out <new_dir>
   ```
-- File ids (first 20 of 7000, full list in `subspace_kmeans_runs/v8_seed2_d64/sample.json`): 0, 1, 6, 8, 9, 10, 11, 12, 13, 14, 16, 18, 19, 21, 22, 24, 25, 26, 27, 28 …
+- File ids (first 20 of 7000, full list in `/home/psaher/latents/subspace_kmeans_runs/v8_seed2_d64/sample.json`): 0, 1, 6, 8, 9, 10, 11, 12, 13, 14, 16, 18, 19, 21, 22, 24, 25, 26, 27, 28 …
 
 ## Convergence
+
+*How to read this: one row per training iteration, from `model['history']`. **objective/token** is the quantity the algorithm minimises — the total reconstruction error divided by the token count, i.e. the average per-token residual the subspaces leave unexplained (for d=0 just the mean squared distance to the nearest centroid); it should fall monotonically and flatten.**labels changed** is the fraction of tokens that switched cluster this iteration. **min/max size** are the smallest and largest cluster token counts that iteration; a min that recovers from a tiny value shows the re-seed guard rescuing a collapsing cluster.*
 
 | iter | objective/token | labels changed | min size | max size |
 |---|---|---|---|---|
@@ -63,15 +82,33 @@
 
 ## Global variance decomposition
 
+*How to read this: this splits the total spread of the tokens into the parts the model explains and the part it doesn't. Writing μ_global for the population-weighted mean of all centroids, the **total variance** is `E‖x − μ_global‖² = between + within`, where:*
+
+- *`between = Σⱼ wⱼ ‖μⱼ − μ_global‖²` — spread of the cluster centroids (from `means`, `counts`).*
+- *`within  = Σⱼ wⱼ · trace[j]` — average spread of tokens around their own centroid (from `trace`, `counts`).*
+- *`captured = Σⱼ wⱼ · Σ eigvals[j]` — the slice of `within` that the subspaces reconstruct (from `eigvals`); `residual = within − captured` is what's left over.*
+
+*Read the three percentages as: how much of all variation is explained by which cluster a token is in, how much by where it sits inside its cluster's subspace, and how much the model misses.*
+
 Total token variance E‖x−μ_global‖² = **6000**, split into:
 
 - **8.5%** between clusters (the means alone — how much cluster identity explains)
 - **60.1%** captured within clusters by the top-64 subspace directions
 - **31.5%** residual (unexplained by the model)
 
-Count-weighted within-cluster EVR(top-64): **0.664**. Dimensions needed for 80% of captured variance: min 26 / median 37 / max 40 (d80 is capped at d+1=65: a cluster reaching that value never hits 80% even using all 64 kept directions).
+Count-weighted within-cluster EVR(top-64): **0.664** — the population-weighted average of the per-cluster EVR defined in the cluster table below (fraction of a cluster's own variance its subspace captures). Dimensions needed for 80% of captured variance: min 26 / median 37 / max 40 (this is the **d80** column below: the smallest number of leading PC directions whose eigenvalues sum to 80% of the kept total; it is capped at d+1=65, meaning a cluster reaching that value never hits 80% even using all 64 kept directions — its spectrum is flat and 64 dimensions still truncate it).
 
 ## Clusters (sorted by size)
+
+*How to read this: one row per cluster, largest first. Each column is computed from `assignments.pt` (the per-token `label` / `cell_id` / `file_id`) and `model.pt`. The columns, with their formulas:*
+
+- *`tokens` = `counts[j]`; `share` = wⱼ = tokens / 86,016,000.*
+- *`EVR(top-64)` = `Σ eigvals[j] / trace[j]` — fraction of this cluster's own variance captured by its subspace (1.0 = the subspace explains the cluster perfectly; near the global average ⇒ d truncates the spectrum).*
+- *`d80` = smallest number of leading PC directions whose eigenvalues reach 80% of `Σ eigvals[j]` (capped at d+1=65 when even all 64 fall short). Low d80 ⇒ a few directions dominate; d80 ≈ d ⇒ a flat spectrum the subspace truncates.*
+- *`cells@50%` = how many of the 12288 HEALPix grid cells hold the top 50% of this cluster's tokens. **Low = geographically localized**, high = spread over the globe.*
+- *`owned` = number of cells where this cluster is the single most common label (the cell's *dominant* cluster). A cluster can be present everywhere yet own few cells.*
+- *`files` = share of the 7000 sampled time steps (latent files, 6-hourly) in which the cluster appears at least once. ≈100% ⇒ always present in time.*
+- *`tCV` = coefficient of variation (std / mean) of the cluster's token share across the 10 time deciles. **0 = perfectly constant over time; high ⇒ seasonal or trending.** Computed over populated deciles only, so a sparse sample can't fake a signal.*
 
 Spatial columns are over the 12288 HEALPix cells with data; `cells@50%` = number of cells holding half the cluster's tokens (low = localized); `owned` = cells where this cluster is the most common label; `files` = share of the 7000 sampled time steps where the cluster appears; `tCV` = coefficient of variation of its share across time deciles (0 = constant in time).
 
@@ -211,16 +248,18 @@ Spatial columns are over the 12288 HEALPix cells with data; `cells@50%` = number
 The world map, 12 monthly dominant-cluster maps, and seasonal profiles live in the dedicated **temporal & spatial report** (`temporal_spatial.py`), read at calendar (monthly) resolution with continent outlines and a smooth heatmap — clearer than a single 12,288-pixel map. Generate it from this run's frozen model + assignments:
 
   ```bash
-  python3 temporal_spatial.py --dir subspace_kmeans_runs/v8_seed2_d64 --out subspace_kmeans_runs/v8_seed2_d64/temporal_report.md
+  python3 temporal_spatial.py --dir /home/psaher/latents/subspace_kmeans_runs/v8_seed2_d64 --out /home/psaher/latents/subspace_kmeans_runs/v8_seed2_d64/temporal_report.md
   ```
 
-The per-cluster `cells@50%` / `owned` / `files` / `tCV` columns above are the compact in-report summary of that same spatial/temporal structure.
+The per-cluster `cells@50%` / `owned` / `files` / `tCV` columns above are the compact in-report summary of that same spatial/temporal structure; see `/home/psaher/latents/subspace_kmeans_runs/v8_seed2_d64/temporal_report.md`.
 
 ## Subspace affinity between clusters
 
+*How to read this: a similarity score between every pair of cluster subspaces. For clusters *i*, *j*, **Affinity(i,j) = ‖UᵢᵀUⱼ‖²_F / d**, the mean of the squared cosines of the principal angles between the two subspaces: **1 = identical span, 0 = orthogonal (completely different directions of variation).** It's computed from the bases in `model['U']` (the centroids are not involved; the side column **mean-vector cosine** = cos∠(μᵢ, μⱼ) compares the centroids separately). A high affinity pair is a candidate for **merging** — a hint K may be too large; if all off-diagonal values are low, the clusters are genuinely distinct regimes.*
+
 Affinity(i,j) = ‖Uᵢᵀ·Uⱼ‖²_F / 64 ∈ [0,1]: mean squared cosine of the principal angles between the two subspaces (1 = identical span, 0 = orthogonal). High-affinity pairs are candidates for merging (K may be too large); uniformly low values mean genuinely distinct regimes.
 
-Off-diagonal affinity: median 0.424, mean 0.435, max 0.812.
+Off-diagonal affinity: median 0.424, mean 0.435, max 0.812 (a low median with a higher max ⇒ most clusters are distinct, only a handful overlap).
 
 | pair | subspace affinity | mean-vector cosine |
 |---|---|---|
@@ -242,4 +281,5 @@ Off-diagonal affinity: median 0.424, mean 0.435, max 0.812.
 - *Localized + present in ~100% of files* (low `cells@50%`, `files` ≈ 100%) ⇒ the cluster is a **geographic regime** (region/surface type), stable in time.
 - *High `tCV`* ⇒ **seasonal or trend** behaviour; see the monthly profiles in the temporal & spatial report (`temporal_spatial.py`).
 - *EVR near the global average with d80 ≈ d* ⇒ the subspace dimension truncates the spectrum; re-run with larger `--dim` to capture more structure.
+- *High subspace affinity between two clusters* ⇒ they vary along nearly the same directions; consider lowering K or merging that pair.
 - Subspace bases live in `model.pt['U']` `[K, 2048, d]` (orthonormal columns, descending eigenvalue order); project tokens with `(x-μ_j) @ U_j`.

@@ -71,7 +71,44 @@ def main():
         add(f"\n*Generated {time.strftime('%Y-%m-%d %H:%M')} by `analyze_clusters.py`. "
             f"K={K} point clusters in {D}-dim token space, {T:,} tokens.*")
 
+    # ---- Reader's guide -----------------------------------------------------
+    add("\n## Overview\n")
+    add("The model groups the "
+        f"{T:,} sampled tokens (each a {D}-dim weather-encoder embedding) into {K} "
+        + (f"clusters, and fits a {d}-dimensional flat (an *affine subspace*: a centroid "
+           "plus a basis of directions) through each one. A token is assigned to whichever "
+           "cluster leaves the smallest **orthogonal residual** — the part of the token "
+           "that its cluster's subspace cannot reconstruct."
+           if d > 0 else
+           "point clusters, each summarised by a single centroid. A token is assigned to "
+           "the nearest centroid (plain squared distance).") )
+    add("\nThe core quantities, defined once here:\n")
+    add("- **μⱼ** (`model['means'][j]`): the centroid (mean token) of cluster *j*.")
+    if d > 0:
+        add(f"- **Uⱼ** (`model['U'][j]`, shape `[{D}, {d}]`): an orthonormal basis for "
+            "cluster *j*'s subspace; its columns are PC directions in descending eigenvalue order.")
+        add("- **Orthogonal residual** of a token *x* under cluster *j*: "
+            "`‖x − μⱼ‖² − ‖Uⱼᵀ(x − μⱼ)‖²`. The first term is the squared distance to the "
+            "centroid; the second is the part of that distance the subspace *captures*. "
+            "What's left is the unexplained residual that the assignment minimises.")
+        add("- **eigvals** (`model['eigvals'][j]`): the top-"
+            f"{d} eigenvalues of cluster *j*'s within-cluster covariance — variance along "
+            "each kept PC direction.")
+    add("- **trace** (`model['trace'][j]`): mean squared distance of cluster *j*'s tokens "
+        "to its centroid μⱼ — the cluster's total within-cluster variance.")
+    add("- **counts** (`model['counts'][j]`): number of tokens in cluster *j*; "
+        "**wⱼ = counts[j] / Σcounts** is its population share, used to weight every global average.")
+
     add("\n## Configuration\n")
+    add("*How to read this: these are the run's input settings, taken from "
+        "`model['config']` (plus `model['sampled_files']` for the true file count). "
+        "`clusters` is K, `dim` is the subspace dimension d (`dim=0` ⇒ plain k-means). "
+        "`iters` is the maximum number of training iterations (each one reassigns every "
+        "token to its best cluster, then refits the centroids and subspaces); `tol` is the "
+        "convergence threshold: once the fraction of tokens that change cluster in an "
+        "iteration falls below it, the run stops early instead of using all `iters`. "
+        "Together they bound how long the run takes. `seed` fixes both the token sample "
+        "and the cluster initialisation so a run is reproducible.*\n")
     add("| parameter | value |")
     add("|---|---|")
     for key in ["src", "num_files", "tokens_per_file", "clusters", "dim",
@@ -90,6 +127,11 @@ def main():
 
     # ---- Token sample (reproducibility / cross-run comparison) --------------
     add("\n## Token sample\n")
+    add("*How to read this: the model was fit on tokens sampled from a subset of the "
+        f"{N_FILES_TOTAL} latent files. The **fingerprint** is a hash of "
+        "(tokens-per-file, seed, sorted file ids): two runs with the same fingerprint saw "
+        "the identical token set and so their metrics can be compared directly. Use the "
+        "reproduce command to fit a new K or d on exactly these tokens.*\n")
     fp = m.get("sample_fingerprint")
     if fp is None and sampled_files:                       # older runs predate the field
         h = hashlib.sha1()
@@ -105,8 +147,7 @@ def main():
                        "seed": cfg.get("seed", 0), "src": cfg.get("src", "latents_2"),
                        "files": list(sampled_files)}, f)             # load order preserved
         print(f"  backfilled {sj}")
-    add(f"- **Sample fingerprint:** `{fp}` — runs sharing this fingerprint were "
-        f"clustered on the identical token set and are directly comparable.")
+    add(f"- **Sample fingerprint:** `{fp}`")
     add(f"- **Files:** {len(sampled_files)} latent files, "
         f"{cfg.get('tokens_per_file', N_CELLS)} tokens each, seed {cfg.get('seed', 0)}.")
     add(f"- **Reproduce this exact sample** for a new run, with this or any other "
@@ -120,6 +161,11 @@ def main():
             f"`{args.dir}/sample.json`): {preview}{' …' if len(sampled_files) > 20 else ''}")
 
     add("\n## Convergence\n")
+    add("*How to read this: one row per training iteration, from `model['history']`. "
+        "**objective/token** is the quantity the algorithm minimises — the total reconstruction error divided by the token count, i.e. the average per-token residual the subspaces leave unexplained (for d=0 just the mean squared distance to the nearest centroid); it should fall monotonically and flatten. **labels changed** is the fraction of tokens that switched "
+        "cluster this iteration. **min/max size** are the smallest and largest cluster token "
+        "counts that iteration; a min that recovers from a tiny value shows the re-seed "
+        "guard rescuing a collapsing cluster.*\n")
     add("| iter | objective/token | labels changed | min size | max size |")
     add("|---|---|---|---|---|")
     for h in hist:
@@ -134,6 +180,21 @@ def main():
     total = between + within
     captured = float((w * eig.sum(1)).sum()) if d > 0 else 0.0
     resid = within - captured
+    add("*How to read this: this splits the total spread of the tokens into the parts the "
+        "model explains and the part it doesn't. Writing μ_global for the population-weighted "
+        "mean of all centroids, the **total variance** is "
+        "`E‖x − μ_global‖² = between + within`, where:*\n")
+    add("- *`between = Σⱼ wⱼ ‖μⱼ − μ_global‖²` — spread of the cluster centroids "
+        "(from `means`, `counts`).*")
+    add("- *`within  = Σⱼ wⱼ · trace[j]` — average spread of tokens around their own "
+        "centroid (from `trace`, `counts`).*")
+    if d > 0:
+        add("- *`captured = Σⱼ wⱼ · Σ eigvals[j]` — the slice of `within` that the "
+            "subspaces reconstruct (from `eigvals`); `residual = within − captured` is what's "
+            "left over.*")
+    add("\n*Read the three percentages as: how much of all variation is explained by which "
+        "cluster a token is in, how much by where it sits inside its cluster's subspace, and "
+        "how much the model misses.*\n")
     add(f"Total token variance E‖x−μ_global‖² = **{total:.0f}**, split into:\n")
     add(f"- **{between / total:.1%}** between clusters (the means alone — how much "
         f"cluster identity explains)")
@@ -142,11 +203,15 @@ def main():
         add(f"- **{resid / total:.1%}** residual (unexplained by the model)")
         frac = eig.cumsum(1) / eig.sum(1, keepdim=True).clamp(min=1e-12)
         d80 = (frac < 0.8).sum(1) + 1
-        add(f"\nCount-weighted within-cluster EVR(top-{d}): **{float((w * evr).sum()):.3f}**. "
+        add(f"\nCount-weighted within-cluster EVR(top-{d}): **{float((w * evr).sum()):.3f}** "
+            f"— the population-weighted average of the per-cluster EVR defined in the cluster "
+            f"table below (fraction of a cluster's own variance its subspace captures). "
             f"Dimensions needed for 80% of captured variance: "
             f"min {int(d80.min())} / median {int(d80.median())} / max {int(d80.max())} "
-            f"(d80 is capped at d+1={d + 1}: a cluster reaching that value never hits 80% "
-            f"even using all {d} kept directions).")
+            f"(this is the **d80** column below: the smallest number of leading PC directions "
+            f"whose eigenvalues sum to 80% of the kept total; it is capped at d+1={d + 1}, "
+            f"meaning a cluster reaching that value never hits 80% even using all {d} kept "
+            f"directions — its spectrum is flat and {d} dimensions still truncate it).")
     else:
         add(f"- **{resid / total:.1%}** residual, i.e. within-cluster (point clusters: "
             f"no subspace basis, so nothing beyond the centroid is captured)")
@@ -157,6 +222,13 @@ def main():
         with open(hj) as f:
             ho = json.load(f)
         add("\n## Held-out generalization\n")
+        add("*How to read this: the variance split above is measured on the very tokens "
+            "the model was fit on, so a flexible model can look good just by memorising them. "
+            "`holdout_eval.py` freezes the trained `means`/`U` and replays the assignment rule "
+            "on fresh tokens from latent files the run never touched. If the **held-out "
+            "residual** matches the **in-sample residual**, the subspaces capture reusable "
+            "structure; a much larger held-out residual (gap > "
+            f"{OVERFIT_GAP_THRESHOLD:.0%}) means the bases were fitting noise.*\n")
         add(f"The variance split above is measured on the tokens the model was *fit* on. "
             f"`holdout_eval.py` froze the trained means and bases and replayed the assignment "
             f"rule on **{ho['num_holdout_tokens']:,} tokens from {ho['num_holdout_files']} "
@@ -207,7 +279,30 @@ def main():
     radius = m.get("radius")
 
     add("\n## Clusters (sorted by size)\n")
-    add(f"Spatial columns are over the {int(cells_with_data.sum())} HEALPix cells with data; "
+    add("*How to read this: one row per cluster, largest first. Each column is computed "
+        "from `assignments.pt` (the per-token `label` / `cell_id` / `file_id`) and "
+        "`model.pt`. The columns, with their formulas:*\n")
+    add(f"- *`tokens` = `counts[j]`; `share` = wⱼ = tokens / {T:,}.*")
+    if d > 0:
+        add(f"- *`EVR(top-{d})` = `Σ eigvals[j] / trace[j]` — fraction of this cluster's own "
+            "variance captured by its subspace (1.0 = the subspace explains the cluster "
+            "perfectly; near the global average ⇒ d truncates the spectrum).*")
+        add("- *`d80` = smallest number of leading PC directions whose eigenvalues reach 80% "
+            f"of `Σ eigvals[j]` (capped at d+1={d + 1} when even all {d} fall short). Low d80 ⇒ "
+            "a few directions dominate; d80 ≈ d ⇒ a flat spectrum the subspace truncates.*")
+    add("- *`cells@50%` = how many of the 12288 HEALPix grid cells hold the top 50% of this "
+        "cluster's tokens. **Low = geographically localized**, high = spread over the globe.*")
+    add("- *`owned` = number of cells where this cluster is the single most common label "
+        "(the cell's *dominant* cluster). A cluster can be present everywhere yet own few cells.*")
+    add(f"- *`files` = share of the {n_sampled_files} sampled time steps (latent files, "
+        "6-hourly) in which the cluster appears at least once. ≈100% ⇒ always present in time.*")
+    add("- *`tCV` = coefficient of variation (std / mean) of the cluster's token share across "
+        "the 10 time deciles. **0 = perfectly constant over time; high ⇒ seasonal or trending.** "
+        "Computed over populated deciles only, so a sparse sample can't fake a signal.*")
+    if radius is not None:
+        add("- *`radius` = k-center's native objective: the max distance from the centroid to "
+            "any member (a worst-case, not an average like `trace`).*")
+    add(f"\nSpatial columns are over the {int(cells_with_data.sum())} HEALPix cells with data; "
         f"`cells@50%` = number of cells holding half the cluster's tokens (low = localized); "
         f"`owned` = cells where this cluster is the most common label; "
         f"`files` = share of the {n_sampled_files} sampled time steps where the cluster appears; "
@@ -251,6 +346,14 @@ def main():
     aff = build_affinity_matrix(U, means)                  # [K,K]
     if d > 0:
         add("\n## Subspace affinity between clusters\n")
+        add("*How to read this: a similarity score between every pair of cluster subspaces. "
+            "For clusters *i*, *j*, **Affinity(i,j) = ‖UᵢᵀUⱼ‖²_F / d**, the mean of the squared "
+            "cosines of the principal angles between the two subspaces: **1 = identical span, "
+            "0 = orthogonal (completely different directions of variation).** It's computed from "
+            "the bases in `model['U']` (the centroids are not involved; the side column "
+            "**mean-vector cosine** = cos∠(μᵢ, μⱼ) compares the centroids separately). A high "
+            "affinity pair is a candidate for **merging** — a hint K may be too large; if all "
+            "off-diagonal values are low, the clusters are genuinely distinct regimes.*\n")
         add(f"Affinity(i,j) = ‖Uᵢᵀ·Uⱼ‖²_F / {d} ∈ [0,1]: mean squared cosine of the principal "
             "angles between the two subspaces (1 = identical span, 0 = orthogonal). "
             "High-affinity pairs are candidates for merging (K may be too large); "
@@ -260,7 +363,8 @@ def main():
         iu = torch.triu_indices(K, K, offset=1)
         offdiag = aff[iu[0], iu[1]]
         add(f"Off-diagonal affinity: median {float(offdiag.median()):.3f}, "
-            f"mean {float(offdiag.mean()):.3f}, max {float(offdiag.max()):.3f}.\n")
+            f"mean {float(offdiag.mean()):.3f}, max {float(offdiag.max()):.3f} "
+            f"(a low median with a higher max ⇒ most clusters are distinct, only a handful overlap).\n")
         add("| pair | subspace affinity | mean-vector cosine |")
         add("|---|---|---|")
         top = offdiag.argsort(descending=True)[:args.top_pairs]
@@ -279,6 +383,8 @@ def main():
     if d > 0:
         add("- *EVR near the global average with d80 ≈ d* ⇒ the subspace dimension truncates the "
             "spectrum; re-run with larger `--dim` to capture more structure.")
+        add("- *High subspace affinity between two clusters* ⇒ they vary along nearly the same "
+            "directions; consider lowering K or merging that pair.")
         add("- Subspace bases live in `model.pt['U']` `[K, 2048, d]` (orthonormal columns, "
             "descending eigenvalue order); project tokens with `(x-μ_j) @ U_j`.")
     if radius is not None:
