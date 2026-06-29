@@ -8,6 +8,7 @@ Reads a run's frozen `model.pt` + `assignments.pt` and writes a dedicated report
   - the ERA5 **time axis** (2014-01-01 00:00, 6-hourly, 4/day; file idx -> datetime),
   - an **annual** dominant-cluster world map (continent outlines + smooth heatmap),
   - **12 monthly** dominant-cluster maps (one per calendar month),
+  - **4 seasonal** dominant-cluster maps (DJF, MAM, JJA, SON),
   - a **monthly enrichment** matrix flagging the most seasonal clusters, and
   - a **month-to-month stability** curve (% of cells whose dominant cluster flips).
 
@@ -45,6 +46,22 @@ from worldmap import (N_CELLS, build_affinity_matrix, affinity_ordered_colors,
 START = datetime(2014, 1, 1, 0, 0)          # ERA5 first step (reconstructed)
 STEP = timedelta(hours=6)                   # 6-hourly cadence (4/day)
 N_FILES_TOTAL = 13021
+
+# Meteorological seasons (Northern Hemisphere convention). DJF spans the year
+# boundary, so December is grouped with the following Jan/Feb. Each entry maps a
+# season key to the 1-based calendar months it contains.
+SEASONS = {
+    "DJF": (12, 1, 2),
+    "MAM": (3, 4, 5),
+    "JJA": (6, 7, 8),
+    "SON": (9, 10, 11),
+}
+SEASON_NAME = {
+    "DJF": "Winter (Dec-Jan-Feb)",
+    "MAM": "Spring (Mar-Apr-May)",
+    "JJA": "Summer (Jun-Jul-Aug)",
+    "SON": "Autumn (Sep-Oct-Nov)",
+}
 
 
 def file_index_to_month():
@@ -99,6 +116,20 @@ def main():
     files_per_month = np.bincount(mon_of_file[np.asarray(sampled_files)],
                                   minlength=13)[1:]            # [12]
 
+    # ---- per-season (season, cell, cluster) counts --------------------------
+    # Built by summing the relevant month slices of `mcc`, so this stays a pure
+    # rendering pass with no recomputation. Order preserved for stable indexing.
+    season_keys = list(SEASONS.keys())
+    scc = torch.stack([                                        # [4, N_CELLS, K]
+        torch.stack([mcc[mm - 1] for mm in SEASONS[s]]).sum(0) for s in season_keys
+    ])
+    dominant_s = scc.argmax(2)                                 # [4, N_CELLS]
+    valid_s = scc.sum(2) > 0                                   # [4, N_CELLS]
+    seasonK = scc.sum(1)                                       # [4, K]
+    season_tot = scc.sum((1, 2))                              # [4]
+    files_per_season = np.array([sum(int(files_per_month[mm - 1]) for mm in SEASONS[s])
+                                 for s in season_keys])        # [4]
+
     # shared colors (one spectral order for every map -> months comparable)
     aff = build_affinity_matrix(U, means)
     colors = affinity_ordered_colors(aff, K)
@@ -118,7 +149,14 @@ def main():
                          title=f"{calendar.month_name[mm + 1]} — dominant cluster per cell "
                                f"({files_per_month[mm]} files, {int(month_tot[mm]):,} tokens)",
                          coastlines=coast, heatmap=heat)
-    print(f"  rendered 13 maps in {time.time() - t0:.1f}s", flush=True)
+    for si, s in enumerate(season_keys):
+        render_world_map(dominant_s[si], valid_s[si], colors,
+                         os.path.join(maps_dir, f"map_season_{s}.png"),
+                         title=f"{SEASON_NAME[s]} — dominant cluster per cell "
+                               f"({int(files_per_season[si])} files, "
+                               f"{int(season_tot[si]):,} tokens)",
+                         coastlines=coast, heatmap=heat)
+    print(f"  rendered {13 + len(season_keys)} maps in {time.time() - t0:.1f}s", flush=True)
 
     # ---- monthly enrichment (seasonality) -----------------------------------
     # nan marks a calendar month with no sampled files (or a cluster absent there);
@@ -131,12 +169,27 @@ def main():
     seas = torch.tensor(np.nanstd(enr_np, axis=0) /
                         np.nanmean(enr_np, axis=0).clip(1e-12))  # [K] seasonality score
 
+    # ---- per-season enrichment (same definition, 4 buckets) -----------------
+    s_denom = season_tot.unsqueeze(1) / T                       # [4,1]
+    s_raw = (seasonK / cnt.clamp(min=1).unsqueeze(0)) / s_denom.clamp(min=1e-12)
+    s_enrich = torch.where(season_tot.unsqueeze(1) > 0, s_raw,
+                           torch.full_like(s_raw, float("nan")))  # [4,K]
+
     # ---- month-to-month dominant-flip rate (temporal stability) -------------
     flips = []
-    for mm in range(11):
-        both = valid_m[mm] & valid_m[mm + 1]
-        flips.append(float((dominant_m[mm][both] != dominant_m[mm + 1][both]).float().mean())
-                     if both.any() else float("nan"))
+    for mm in range(12):
+        nxt = (mm + 1) % 12
+        both = valid_m[mm] & valid_m[nxt]
+        flips.append(float((dominant_m[mm][both] != dominant_m[nxt][both]).float().mean())
+                    if both.any() else float("nan"))
+
+    # ---- season-to-season dominant-flip rate (cyclic, SON->DJF closes loop) --
+    season_flips = []
+    for si in range(4):
+        sj = (si + 1) % 4
+        both = valid_s[si] & valid_s[sj]
+        season_flips.append(float((dominant_s[si][both] != dominant_s[sj][both]).float().mean())
+                            if both.any() else float("nan"))
 
     # ---- Jan vs Jul shift ---------------------------------------------------
     both_17 = valid_m[0] & valid_m[6]
@@ -144,6 +197,14 @@ def main():
                        if both_17.any() else float("nan"))
     owned = lambda dom, v: torch.bincount(dom[v].long(), minlength=K)   # cells per cluster
     delta_jul_jan = (owned(dominant_m[6], valid_m[6]) - owned(dominant_m[0], valid_m[0])).float()
+
+    # ---- Dec vs Jan shift (winter transition across the year boundary) ------
+    # Dec is month index 11, Jan is month index 0. Both sit inside DJF, so this
+    # isolates how much the dominant geography reorganizes within a single winter.
+    both_dj = valid_m[11] & valid_m[0]
+    dec_jan_changed = (float((dominant_m[11][both_dj] != dominant_m[0][both_dj]).float().mean())
+                       if both_dj.any() else float("nan"))
+    delta_jan_dec = (owned(dominant_m[0], valid_m[0]) - owned(dominant_m[11], valid_m[11])).float()
 
     # ============================= report ====================================
     L = []
@@ -165,10 +226,14 @@ def main():
     add(f"The {N_FILES_TOTAL:,} files therefore span **file 0 = 2014-01-01 00:00** through "
         f"**file 13020 = 2022-11-30 00:00**. (A complete 9-year 2014→2022 ERA5 record would "
         f"run to 2022-12-31 18:00 — about 127 more steps — so the last ~month of 2022 is "
-        f"treated as not fully covered.) Monthly grouping below uses this reconstructed date.")
+        f"treated as not fully covered.) Monthly and seasonal grouping below uses this "
+        f"reconstructed date.")
     add(f"\nSampled files per calendar month: "
         + ", ".join(f"{calendar.month_abbr[mm + 1]} {int(files_per_month[mm])}"
                     for mm in range(12)) + ".")
+    add(f"\nSampled files per season: "
+        + ", ".join(f"{s} {int(files_per_season[si])}"
+                    for si, s in enumerate(season_keys)) + ".")
 
     add("\n## Annual map\n")
     add(f"![Annual dominant cluster]({maps_rel}/map_annual.png)\n")
@@ -215,15 +280,39 @@ def main():
             f"{int(month_tot[mm]):,} tokens)\n")
         add(f"![{calendar.month_name[mm + 1]}]({maps_rel}/map_month_{mm + 1:02d}.png)\n")
 
+    add("\n## Seasonal maps\n")
+    add("The same dominant-cluster field aggregated into the four meteorological seasons "
+        "(Northern Hemisphere convention; DJF groups December with the following January and "
+        "February). Averaging three months each smooths the month-to-month noise and makes the "
+        "broad seasonal regimes easier to read than the individual monthly maps. Same color "
+        "scale throughout.\n")
+    for si, s in enumerate(season_keys):
+        add(f"**{SEASON_NAME[s]}** ({int(files_per_season[si])} files, "
+            f"{int(season_tot[si]):,} tokens)\n")
+        add(f"![{SEASON_NAME[s]}]({maps_rel}/map_season_{s}.png)\n")
+
+    add("\n### Season-to-season stability\n")
+    add("Share of cells whose **dominant cluster changes** between consecutive seasons "
+        "(cyclic, so the final row closes the loop SON→DJF). Lower than the monthly flip rate "
+        "because three-month averaging absorbs short transient regimes.\n")
+    add("| transition | cells changing dominant cluster |")
+    add("|---|---|")
+    for si in range(4):
+        sj = (si + 1) % 4
+        add(f"| {season_keys[si]}→{season_keys[sj]} | {cell(season_flips[si], '.1%')} |")
+
     add("\n## Most seasonal clusters\n")
     add("Enrichment of each cluster per month = `(cluster share in month) / (its average share)`. "
         "**1.0 = present year-round**; values ≫ 1 mark the months where the cluster concentrates "
-        "(a seasonal signature). Sorted by seasonality (std/mean across the 12 months).\n")
-    add("| cluster | seasonality | " + " | ".join(calendar.month_abbr[mm + 1] for mm in range(12)) + " |")
-    add("|---|---|" + "|".join(["---"] * 12) + "|")
+        "(a seasonal signature). Sorted by seasonality (std/mean across the 12 months). The four "
+        "right-hand columns repeat the enrichment aggregated by season for a coarser read.\n")
+    add("| cluster | seasonality | " + " | ".join(calendar.month_abbr[mm + 1] for mm in range(12))
+        + " | " + " | ".join(season_keys) + " |")
+    add("|---|---|" + "|".join(["---"] * 12) + "|" + "|".join(["---"] * 4) + "|")
     for j in seas.argsort(descending=True)[:args.top_seasonal].tolist():
         row = " | ".join(cell(enrich[mm, j]) for mm in range(12))
-        add(f"| {j} | {cell(seas[j])} | {row} |")
+        srow = " | ".join(cell(s_enrich[si, j]) for si in range(4))
+        add(f"| {j} | {cell(seas[j])} | {row} | {srow} |")
 
     add("\n## Month-to-month stability\n")
     fa = np.array(flips, dtype=float)
@@ -236,8 +325,10 @@ def main():
            else " (no consecutive months both have data.)\n"))
     add("| transition | cells changing dominant cluster |")
     add("|---|---|")
-    for mm in range(11):
-        add(f"| {calendar.month_abbr[mm + 1]}→{calendar.month_abbr[mm + 2]} | {cell(flips[mm], '.1%')} |")
+    for mm in range(12):
+        nxt = (mm + 1) % 12
+        add(f"| {calendar.month_abbr[mm + 1]}→{calendar.month_abbr[nxt + 1]} | {cell(flips[mm], '.1%')} |")
+
     add(f"\n**Jan ↔ Jul** (winter vs summer hemisphere): **{cell(jan_jul_changed, '.1%')}** of cells change "
         "dominant cluster. Largest cluster shifts (owned-cell count, Jul − Jan): "
         + ", ".join(f"{int(j)}: {delta_jul_jan[j]:+.0f}"
