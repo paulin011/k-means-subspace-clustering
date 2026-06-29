@@ -227,3 +227,71 @@ def render_world_map(dominant, valid, colors, out_png, *, title="", suptitle="",
     fig.tight_layout()
     fig.savefig(out_png, dpi=150)
     plt.close(fig)
+
+def render_change_map(dom_a, valid_a, dom_b, valid_b, colors, out_png, *,
+                      mode="dest", top_n=8, title="", coastlines=True, heatmap=True,
+                      grey=(0.85, 0.85, 0.87), nside=NSIDE):
+    """Map the cells whose dominant cluster changed between state A and state B.
+
+    Only cells valid in BOTH states are comparable; among those, cells whose dominant
+    cluster differs are 'changed'. Changed cells are colored, everything else (held, or
+    not comparable) is painted neutral grey. The field is made DENSE (every cell gets a
+    value, held -> an appended grey palette row) so the smooth `render_world_map` heatmap
+    path interpolates honestly instead of extrapolating from sparse points.
+
+    mode:
+      "dest"  -> color each changed cell by its state-B (destination) cluster, using the
+                 shared `colors` palette (so hues match the per-state maps).
+      "src"   -> color each changed cell by its state-A (source) cluster, same palette.
+      "trans" -> color by transition: the `top_n` most common (A,B) flows each get a
+                 distinct qualitative color; rarer flips fall back to grey. Returns a
+                 legend so the caller can render a table.
+
+    Returns (n_changed, n_comparable, legend). `legend` is [] for dest/src, or a list of
+    (slot, a, b, n_cells) rows for trans (slot indexes the qualitative palette order).
+    """
+    import matplotlib.pyplot as plt
+
+    a = dom_a.long() if torch.is_tensor(dom_a) else torch.as_tensor(dom_a).long()
+    b = dom_b.long() if torch.is_tensor(dom_b) else torch.as_tensor(dom_b).long()
+    va = valid_a if torch.is_tensor(valid_a) else torch.as_tensor(valid_a)
+    vb = valid_b if torch.is_tensor(valid_b) else torch.as_tensor(valid_b)
+    both = va.bool() & vb.bool()                              # comparable cells
+    changed = both & (a != b)                                # flipped cells
+    n_changed, n_comp = int(changed.sum()), int(both.sum())
+
+    K = colors.shape[0]
+    grey_row = np.asarray([[grey[0], grey[1], grey[2], 1.0]])
+    legend = []
+
+    if mode in ("dest", "src"):
+        src_field = b if mode == "dest" else a               # which cluster names the color
+        grey_slot = K
+        field = torch.full((N_CELLS,), grey_slot, dtype=torch.long)
+        field[changed] = src_field[changed]
+        palette = np.vstack([colors, grey_row])              # [K+1, 4]
+    elif mode == "trans":
+        pair_id = a * K + b                                  # unique id per (A,B) pair
+        cp = pair_id[changed]
+        uniq, counts = torch.unique(cp, return_counts=True)
+        top = uniq[torch.argsort(counts, descending=True)][:top_n]
+        n_top = len(top)
+        # qualitative, maximally-distinct colors; held/rare -> last (grey) slot
+        base = plt.cm.tab10 if n_top <= 10 else plt.cm.tab20
+        qual = base(np.linspace(0, 1, 10 if n_top <= 10 else 20))[:n_top]
+        palette = np.vstack([qual, grey_row])               # [n_top+1, 4]
+        grey_slot = n_top
+        field = torch.full((N_CELLS,), grey_slot, dtype=torch.long)
+        flip_idx = changed.nonzero(as_tuple=True)[0]
+        for slot, p in enumerate(top.tolist()):
+            sel = flip_idx[(cp == p)]
+            field[sel] = slot
+            pa, pb = divmod(p, K)
+            legend.append((slot, pa, pb, int((cp == p).sum())))
+    else:
+        raise ValueError(f"mode must be 'dest', 'src', or 'trans'; got {mode!r}")
+
+    valid_all = torch.ones(N_CELLS, dtype=torch.bool)        # dense: every cell has a value
+    render_world_map(field, valid_all, palette, out_png,
+                     title=title, coastlines=coastlines, heatmap=heatmap, nside=nside)
+    return n_changed, n_comp, legend

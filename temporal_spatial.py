@@ -9,6 +9,7 @@ Reads a run's frozen `model.pt` + `assignments.pt` and writes a dedicated report
   - an **annual** dominant-cluster world map (continent outlines + smooth heatmap),
   - **12 monthly** dominant-cluster maps (one per calendar month),
   - **4 seasonal** dominant-cluster maps (DJF, MAM, JJA, SON),
+  - **Jan -> Jul change maps** (top transition flows + July-destination coloring),
   - a **monthly enrichment** matrix flagging the most seasonal clusters, and
   - a **month-to-month stability** curve (% of cells whose dominant cluster flips).
 
@@ -41,7 +42,7 @@ import numpy as np
 import torch
 
 from worldmap import (N_CELLS, build_affinity_matrix, affinity_ordered_colors,
-                      render_world_map)
+                      render_world_map, render_change_map)
 
 START = datetime(2014, 1, 1, 0, 0)          # ERA5 first step (reconstructed)
 STEP = timedelta(hours=6)                   # 6-hourly cadence (4/day)
@@ -80,6 +81,8 @@ def main():
     ap.add_argument("--out", default=None, help="output Markdown (default: <dir>/temporal_report.md)")
     ap.add_argument("--top-seasonal", type=int, default=8,
                     help="most seasonal clusters to profile (12-month enrichment)")
+    ap.add_argument("--top-transitions", type=int, default=8,
+                    help="most common Jan->Jul A->B flows to color on the transition map")
     ap.add_argument("--no-coastlines", action="store_true", help="skip continent outlines")
     ap.add_argument("--no-heatmap", action="store_true",
                     help="use the legacy scatter pixels instead of the smooth heatmap")
@@ -156,7 +159,32 @@ def main():
                                f"({int(files_per_season[si])} files, "
                                f"{int(season_tot[si]):,} tokens)",
                          coastlines=coast, heatmap=heat)
-    print(f"  rendered {13 + len(season_keys)} maps in {time.time() - t0:.1f}s", flush=True)
+
+    # ---- Jan -> Jul change maps (both via render_change_map) ----------------
+    # both_17 = cells sampled in BOTH Jan and Jul; only those have a meaningful answer.
+    both_17 = valid_m[0] & valid_m[6]
+    changed_jul_jan = both_17 & (dominant_m[0] != dominant_m[6])         # [N_CELLS] bool
+
+    # (1) transition map: the top-N most common A->B flows, each a distinct color.
+    #     Sparse footprint -> heatmap=False keeps crisp per-cell squares; pair_legend
+    #     feeds the report table below.
+    _, _, pair_legend = render_change_map(
+        dominant_m[0], valid_m[0], dominant_m[6], valid_m[6], colors,
+        os.path.join(maps_dir, "map_change_jan_jul.png"),
+        mode="trans", top_n=args.top_transitions, coastlines=coast, heatmap=False,
+        title=f"Jan -> Jul dominant-cluster transitions (top {args.top_transitions} flows; "
+              f"{int(changed_jul_jan.sum())} of {int(both_17.sum())} cells flip)")
+
+    # (2) destination map: changed cells colored by their JULY cluster (shared palette,
+    #     so hues match the monthly/seasonal maps), held cells grey. Dense field -> the
+    #     smooth heatmap renderer works honestly, so follow the report's heatmap mode.
+    render_change_map(
+        dominant_m[0], valid_m[0], dominant_m[6], valid_m[6], colors,
+        os.path.join(maps_dir, "map_change_jul_dest.png"),
+        mode="dest", coastlines=coast, heatmap=heat,
+        title=f"Jan -> Jul changes, colored by July cluster "
+              f"({int(changed_jul_jan.sum())} of {int(both_17.sum())} cells; grey = unchanged)")
+    print(f"  rendered {15 + len(season_keys)} maps in {time.time() - t0:.1f}s", flush=True)
 
     # ---- monthly enrichment (seasonality) -----------------------------------
     # nan marks a calendar month with no sampled files (or a cluster absent there);
@@ -192,7 +220,6 @@ def main():
                             if both.any() else float("nan"))
 
     # ---- Jan vs Jul shift ---------------------------------------------------
-    both_17 = valid_m[0] & valid_m[6]
     jan_jul_changed = (float((dominant_m[0][both_17] != dominant_m[6][both_17]).float().mean())
                        if both_17.any() else float("nan"))
     owned = lambda dom, v: torch.bincount(dom[v].long(), minlength=K)   # cells per cluster
@@ -274,11 +301,11 @@ def main():
     add("\n## Monthly maps\n")
     add("One dominant-cluster map per calendar month (same color scale as the annual map), "
         "revealing the seasonal cycle. Each cell is colored by its most frequent cluster among "
-        "that month's tokens.\n")
-    for mm in range(12):
-        add(f"**{calendar.month_name[mm + 1]}** ({int(files_per_month[mm])} files, "
-            f"{int(month_tot[mm]):,} tokens)\n")
-        add(f"![{calendar.month_name[mm + 1]}]({maps_rel}/map_month_{mm + 1:02d}.png)\n")
+        f"that month's tokens. Image files are in `{args.dir}maps/`\n")
+    # for mm in range(12):
+    #     add(f"**{calendar.month_name[mm + 1]}** ({int(files_per_month[mm])} files, "
+    #         f"{int(month_tot[mm]):,} tokens)\n")
+    #     add(f"![{calendar.month_name[mm + 1]}]({maps_rel}/map_month_{mm + 1:02d}.png)\n")
 
     add("\n## Seasonal maps\n")
     add("The same dominant-cluster field aggregated into the four meteorological seasons "
@@ -335,6 +362,28 @@ def main():
                     for j in delta_jul_jan.argsort(descending=True)[:5].tolist())
         + " ….")
 
+    add("\n## Jan → Jul change maps\n")
+    add(f"\n![Jan to Jul changes by July cluster]({maps_rel}/map_change_jul_dest.png)\n")
+    add(f"**By July destination.** The same flipped cells, now colored by each cell's **July** "
+        f"cluster (grey = held its cluster). Colors match the monthly and seasonal maps, so a "
+        f"changed region's hue tells you which July regime it joined; where a coherent area "
+        f"shares one color, a whole region migrated into the same summer cluster together.")
+
+    add(f"![Jan to Jul transitions]({maps_rel}/map_change_jan_jul.png)\n")
+    add(f"**By transition.** The {len(pair_legend)} most common dominant-cluster flows between "
+        f"January and July. Each color is one **A -> B flow** (cluster A in Jan becomes cluster "
+        f"B in Jul); grey cells either held their cluster or flipped via a rarer transition "
+        f"outside the top {len(pair_legend)}. Cells sharing a color all made the *same* move, so "
+        f"a coherent colored region is a single seasonal regime shift acting on a whole area. "
+        f"Note these rows are single A -> B flows, so they will not line up with the net "
+        f"per-cluster deltas above (which pool every source cluster).\n")
+    add("| color | Jan cluster -> Jul cluster | cells |")
+    add("|---|---|---|")
+    for slot, a, b, n_cells in pair_legend:
+        add(f"| {slot} | {a} -> {b} | {n_cells} |")
+
+
+
     add("\n## Interpretation notes\n")
     add("- **Stable geography + month-to-month flips near the minimum** ⇒ clusters are "
         "**geographic regimes** (region/surface type) that hold their territory year-round.")
@@ -344,7 +393,7 @@ def main():
         "(opposite phases north/south).")
     add("- Monthly maps share one color scale, so a hue *appearing* in a region month-to-month "
         "is a real shift, not a recoloring.")
-    add(f"\n*See the main clustering report (`{args.dir}/report.md`) for convergence, variance "
+    add(f"\n*See the main clustering report (`{args.dir}report.md`) for convergence, variance "
         f"decomposition, per-cluster spatial/temporal columns, and subspace affinity.*")
 
     with open(out_path, "w") as f:
