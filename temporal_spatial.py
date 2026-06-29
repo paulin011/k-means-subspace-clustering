@@ -329,10 +329,25 @@ def main():
         add(f"| {season_keys[si]}→{season_keys[sj]} | {cell(season_flips[si], '.1%')} |")
 
     add("\n## Most seasonal clusters\n")
-    add("Enrichment of each cluster per month = `(cluster share in month) / (its average share)`. "
-        "**1.0 = present year-round**; values ≫ 1 mark the months where the cluster concentrates "
-        "(a seasonal signature). Sorted by seasonality (std/mean across the 12 months). The four "
-        "right-hand columns repeat the enrichment aggregated by season for a coarser read.\n")
+    add("This table identifies which clusters behave like **seasonal regimes** "
+        "(monsoon, sea-ice, snow cover) versus **year-round geographic regimes**.\n")
+    add("**Enrichment** of each cluster per month = `(cluster share in month) / (its average share)`. "
+        "Read it as a multiplier on the cluster's baseline presence: **1.0 = present at its "
+        "normal level** that month, **2.0 = twice as concentrated** as usual, **0.5 = half**. "
+        "A cluster that is genuinely year-round sits near 1.0 across every column; a cluster "
+        "that erupts in summer and vanishes in winter swings far above and below 1.0. Because "
+        "the metric is normalized by each cluster's own average, a small cluster and a large "
+        "cluster are directly comparable: the number is about *timing*, not *size*.\n")
+    add("**Seasonality** = `std / mean` of those 12 monthly enrichments (the coefficient of "
+        "variation). It collapses the whole year into one score for *how peaked* a cluster is: "
+        "**~0 = flat / aseasonal** (the same every month), **higher = more concentrated** into "
+        "particular months. Rows are sorted by this score, so the clusters at the top are the "
+        "most strongly seasonal ones in the run, and scanning their monthly columns tells you "
+        "*when* each one peaks. An en-dash marks a month with no sampled data, which is excluded "
+        "from the score rather than counted as zero.\n")
+    add("The four right-hand columns repeat the same enrichment aggregated into seasons "
+        "(DJF/MAM/JJA/SON) for a coarser, lower-noise read of the same signal: a cluster peaking "
+        "in a single season shows one column well above 1.0 and the rest below.\n")
     add("| cluster | seasonality | " + " | ".join(calendar.month_abbr[mm + 1] for mm in range(12))
         + " | " + " | ".join(season_keys) + " |")
     add("|---|---|" + "|".join(["---"] * 12) + "|" + "|".join(["---"] * 4) + "|")
