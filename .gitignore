@@ -3,6 +3,7 @@ __pycache__/
 JL-Downscaling/
 latents_2/
 latents_downscaled/
+.venv/*
 
 # legacy run logs (see CLAUDE.md "Legacy — ignore")
 nohup.out
@@ -11,3 +12,4 @@ verify_script.*
 
 # large per-run checkpoints/results (exceed GitHub's 100MB file limit)
 *.pt
+
