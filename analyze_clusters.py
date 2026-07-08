@@ -112,7 +112,7 @@ def main():
     add("| parameter | value |")
     add("|---|---|")
     for key in ["src", "num_files", "tokens_per_file", "clusters", "dim",
-                "iters", "tol", "linear", "seed", "chunk_size", "gpus"]:
+                "iters", "tol", "linear", "seed", "chunk_size", "gpus", "gpu"]:
         if key == "num_files":
             # cfg["num_files"] is the --num-files ARG, which --files-from ignores, so for
             # runs that reuse a previous sample it can be a stale default (e.g. 1500).
@@ -161,16 +161,31 @@ def main():
             f"`{args.dir}/sample.json`): {preview}{' …' if len(sampled_files) > 20 else ''}")
 
     add("\n## Convergence\n")
-    add("*How to read this: one row per training iteration, from `model['history']`. "
-        "**objective/token** is the quantity the algorithm minimises — the total reconstruction error divided by the token count, i.e. the average per-token residual the subspaces leave unexplained (for d=0 just the mean squared distance to the nearest centroid); it should fall monotonically and flatten. **labels changed** is the fraction of tokens that switched "
-        "cluster this iteration. **min/max size** are the smallest and largest cluster token "
-        "counts that iteration; a min that recovers from a tiny value shows the re-seed "
-        "guard rescuing a collapsing cluster.*\n")
-    add("| iter | objective/token | labels changed | min size | max size |")
-    add("|---|---|---|---|---|")
-    for h in hist:
-        add(f"| {h['iter']} | {h['obj_per_token']:.2f} | {h['frac_changed']:.2%} "
-            f"| {h['size_min']:,} | {h['size_max']:,} |")
+    if hist and "iter" in hist[0]:
+        add("*How to read this: one row per training iteration, from `model['history']`. "
+            "**objective/token** is the quantity the algorithm minimises — the total reconstruction error divided by the token count, i.e. the average per-token residual the subspaces leave unexplained (for d=0 just the mean squared distance to the nearest centroid); it should fall monotonically and flatten. **labels changed** is the fraction of tokens that switched "
+            "cluster this iteration. **min/max size** are the smallest and largest cluster token "
+            "counts that iteration; a min that recovers from a tiny value shows the re-seed "
+            "guard rescuing a collapsing cluster.*\n")
+        add("| iter | objective/token | labels changed | min size | max size |")
+        add("|---|---|---|---|---|")
+        for h in hist:
+            add(f"| {h['iter']} | {h['obj_per_token']:.2f} | {h['frac_changed']:.2%} "
+                f"| {h['size_min']:,} | {h['size_max']:,} |")
+    elif hist:
+        # k-center (Gonzalez greedy) history: one row per centre added, not per sweep.
+        add("*How to read this: one row per centre added by the Gonzalez farthest-point "
+            "greedy, from `model['history']`. **covering radius** is the max distance from "
+            "any token to its nearest chosen centre so far — k-center's native minimax "
+            "objective; it shrinks (non-strictly) as centres are added. **objective/token** "
+            "is the mean squared distance to the nearest centre so far, shown for comparison "
+            "with k-means/subspace_kmeans's objective.*\n")
+        add("| centre | covering radius | objective/token |")
+        add("|---|---|---|")
+        for h in hist:
+            add(f"| {h['centre']} | {h['covering_radius']:.2f} | {h['obj_per_token']:.2f} |")
+    else:
+        add("_No convergence history recorded._")
 
     # ---- Global variance decomposition --------------------------------------
     add("\n## Global variance decomposition\n")

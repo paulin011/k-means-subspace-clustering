@@ -116,6 +116,52 @@ shared contract above:
 
 Project a token onto its cluster subspace with `(x - means[j]) @ U[j]`.
 
+### `kcenter.py` — k-center clustering (Gonzalez farthest-point greedy)
+
+Point-cluster (`d=0`) counterpart to `subspace_kmeans.py --dim 0`: no per-cluster
+subspace, just `K` centroids chosen to minimize the **covering radius** (the max
+distance from any token to its nearest centre) — k-center's native minimax objective,
+as opposed to the mean squared distance k-means/subspace_kmeans minimize.
+
+Algorithm (Gonzalez, 2-approximation for the minimax objective):
+
+1. Pick a random token as the first centre.
+2. Maintain `min_sq[t]` = squared distance from token `t` to its nearest chosen centre.
+3. Repeat `K-1` times: add the token with the largest `min_sq` (the current
+   worst-covered point) as the next centre, then update `min_sq`.
+4. Final pass: assign every token to its nearest centre; compute per-cluster `counts`,
+   `trace` (mean squared distance), and `radius` (max Euclidean distance = covering
+   radius).
+
+Single GPU (`--gpu`, default 0) — unlike `subspace_kmeans.py`, which splits work across
+both A100s. Sampling and IO go through `cluster_io.py`, so runs are directly comparable
+to `subspace_kmeans`/k-means (same `sample.json` / fingerprint) and readable by
+`analyze_clusters.py`.
+
+```bash
+# defaults: 1500 files, K=64
+nohup python3 kcenter.py --num-files 7000 -K 128 --out kcenter_runs/v1_out \
+    > kcenter_runs/v1_out/run.log 2>&1 &
+
+# on the identical tokens as an existing subspace_kmeans/kcenter run, for direct comparison
+python3 kcenter.py --files-from subspace_kmeans_runs/v2_subspace_big/sample.json \
+    --clusters 128 --out kcenter_runs/v2_comparable
+```
+
+Outputs (in `--out`), via `cluster_io.py`'s `save_model`/`save_assignments` — see the
+shared contract above:
+
+| file | contents |
+|---|---|
+| `model.pt` | `U [K, 2048, 0]` (empty — no subspace), `means [K, 2048]`, `eigvals [K, 0]`, `trace [K]`, `counts [K]`, `radius [K]` (max distance from centroid to any member — k-center's own minimax objective), `config`, `history` (one entry **per centre added**: `centre`, `covering_radius`, `obj_per_token` — not per training iteration like `subspace_kmeans.py`), `sampled_files`, `sample_fingerprint` |
+| `assignments.pt` | `file_id` / `cell_id` / `label` (int32) for every sampled token |
+| `sample.json` | reproducible manifest, same schema as `subspace_kmeans.py`'s |
+
+`analyze_clusters.py` detects the per-centre `history` shape automatically and renders
+a matching Convergence table (`centre` / `covering radius` / `objective/token`, instead
+of `subspace_kmeans.py`'s `iter` / `labels changed` / `min size` / `max size`), plus a
+`radius` column in the per-cluster table.
+
 ### `analyze_clusters.py` — Markdown report generator
 
 Algorithm-agnostic: reads any `model.pt`/`assignments.pt` following the `cluster_io.py`
