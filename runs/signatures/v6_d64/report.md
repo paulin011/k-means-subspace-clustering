@@ -1,6 +1,6 @@
-# Per-file regime signature + residual — `runs/signatures/v6_d64`
+# Per-file regime signature + residual — `runs/signatures/v6_d64_new`
 
-*Generated 2026-06-26 13:57 by `file_signature.py`. Frozen model `runs/clustering/v6_subspace_big_d64` (K=128, d=64, affine=True, fingerprint `82ca602ed7e7`). 13,021 files × 12288 cells = 160,002,048 tokens assigned on a single GPU.*
+*Generated 2026-07-31 17:41 by `file_signature.py`. Frozen model `runs/clustering/v6_subspace_big_d64` (K=128, d=64, affine=True, fingerprint `82ca602ed7e7`). 13,021 files × 12288 cells = 160,002,048 tokens assigned on a single GPU.*
 
 ## What this is
 
@@ -51,6 +51,28 @@ The count-weighted mean of `mean_residual` over all 13,021 files is **1888.12** 
 | 11 | 6653 | 2018-07-22T06 | 16.1% | 30.8% | 88 |
 | 12 | 11042 | 2021-07-23T12 | 16.1% | 30.6% | 88 |
 
+## Per-cell outlier map
+
+*How to read this: `residual_frac` above scores a whole snapshot. `residual_map.npy` `[N, 12288]` keeps the **same residual per HEALPix cell**, so an outlier can be localised to where on the globe it happened instead of only when. It is the identical quantity — averaging a row reproduces that row's `mean_residual` exactly — just not reduced over cells.*
+
+Raw residuals are **not comparable between cells**: an intrinsically hard cell (storm track) outscores an easy one (subtropical ocean) in every snapshot. Score outliers against each cell's own temporal norm, using the climatology vectors stored in `signatures.npz`:
+
+```python
+import numpy as np
+R = np.load('runs/signatures/v6_d64_new/residual_map.npy', mmap_mode='r')   # [N, 12288]
+s = np.load('runs/signatures/v6_d64_new/signatures.npz')
+z = (R - s['cell_mean_residual']) / np.maximum(s['cell_std_residual'], 1e-6)
+# z[t, cell] > 4  ->  this cell is far outside its own normal range at step t
+```
+
+- per-cell mean residual across the 13,021 steps: min **273** / median **1923** / max **3386** (12.4× spread — this is exactly why the normalisation is needed).
+- per-cell temporal std: median **347** (median std/mean = 18.5%).
+- hardest cells (highest mean residual, NESTED ids): 6928, 6586, 6871, 7601, 5558, 8064, 6524, 6919, 6046, 12254.
+- easiest cells: 11313, 10289, 11310, 10290, 10305, 11314, 10369, 11393, 10285, 11309.
+
+`label_map.npy` `[N, 12288]` int16 carries the assigned cluster per cell over the **whole dataset** — the dynamic counterpart to `assignments.pt`, which only covers the sampled files. Both arrays sit on the same NESTED `[T, 12288]` grid as `err_persist.npy`, so they gather onto each other with no remapping: intersect them to separate *anomalous because rapidly changing* (high persistence error) from *anomalous because unmodelled* (high residual, low persistence error).
+
+
 ## How to use for goal 1 (timestamp selection)
 
 - **Diversity / coverage sampling** (anti-redundancy): `cluster_mix.csv` is the feature matrix; run k-center / farthest-point in mix-space to pick a minimal covering subset — consecutive timesteps are near-duplicates in mix (clusters are geographic & time-stable).
@@ -65,3 +87,5 @@ The count-weighted mean of `mean_residual` over all 13,021 files is **1888.12** 
 - `file_summary.csv` — one row per file (human-readable, sorted by file_id).
 - `cluster_mix.csv` — wide mix matrix for pandas / sklearn timestamp selection.
 - `manifest.json` — provenance, formulas, rare-cluster list.
+- `residual_map.npy` — `[13021, 12288]` float32 per-cell residual (0.60 GiB; load with `mmap_mode='r'`).
+- `label_map.npy` — `[13021, 12288]` int16 per-cell assigned cluster.

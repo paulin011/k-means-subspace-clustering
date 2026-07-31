@@ -1,5 +1,5 @@
 {
-  "model_dir": "runs/clustering/v6_subspace_big_d64",
+  "model_dir": "/home/psaher/latents/runs/clustering/v6_subspace_big_d64",
   "model_fingerprint": "82ca602ed7e7",
   "K": 128,
   "d": 64,
@@ -53,6 +53,13 @@
     "residual_frac": "mean_residual / mean_total  (total = E||x-mu_global||^2, mu_global frozen from the trained cluster means)",
     "mix_k": "fraction of the file's 12288 cells assigned to cluster k"
   },
-  "generated_at": "2026-06-26 13:57:26",
-  "wall_time_min": 27.5
+  "cell_maps": {
+    "residual_map.npy": "[13021, 12288] float32 -- residual_(assigned)(x) for every HEALPix cell of every file (NESTED ordering); row i is file_ids[i], NOT file id i",
+    "label_map.npy": "[13021, 12288] int16 -- assigned cluster per cell, same row convention",
+    "row_axis": "rows follow the sorted file list, identical to signatures.npz / file_summary.csv row order (file_ids)",
+    "normalisation": "z[t,cell] = (residual_map[t,cell] - cell_mean_residual[cell]) / cell_std_residual[cell]  -- raw residuals are not comparable across cells",
+    "aligns_with": "same [T, 12288] NESTED grid as runs/persistence/*/err_persist.npy (one row shorter there: transitions, not states)"
+  },
+  "generated_at": "2026-07-31 17:41:22",
+  "wall_time_min": 19.1
 }

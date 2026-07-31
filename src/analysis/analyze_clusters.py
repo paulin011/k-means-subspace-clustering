@@ -275,10 +275,24 @@ def main():
     cum = sorted_cells.cumsum(0) / sorted_cells.sum(0).clamp(min=1)
     cells50 = (cum < 0.5).sum(0) + 1                       # cells holding 50% of each cluster
 
-    file_present = torch.bincount(fid * K + lab, minlength=N_FILES_TOTAL * K) \
-                        .view(N_FILES_TOTAL, K) > 0
+    # Temporal concentration -- the time-axis analogue of cells@50%: what share of the
+    # sampled time steps holds the top 50% of this cluster's tokens.
+    #
+    # This replaces the old `files` column ("share of time steps where the cluster appears
+    # at least once"), which was vacuous: with 12,288 cells spread over K=128 clusters,
+    # every cluster turns up somewhere in essentially every snapshot, so on v6 that column
+    # read exactly 100% for 112 of 128 clusters and took only 12 distinct values in total.
+    # A presence test needs a threshold to say anything, and rather than pick an arbitrary
+    # one this uses the threshold-free concentration measure (it separates 126/128 clusters
+    # on v6 and correlates only 0.13 with cluster size, so it is not just re-encoding size).
+    # It also has a fixed reference point: a cluster spread perfectly evenly over time
+    # needs half the time steps to accumulate half its tokens, i.e. exactly 50%.
+    file_counts = torch.bincount(fid * K + lab, minlength=N_FILES_TOTAL * K) \
+                       .view(N_FILES_TOTAL, K).float()
     n_sampled_files = int((torch.bincount(fid, minlength=N_FILES_TOTAL) > 0).sum())
-    files_pct = file_present.sum(0).float() / n_sampled_files
+    sorted_files = file_counts.sort(0, descending=True).values
+    fcum = sorted_files.cumsum(0) / sorted_files.sum(0).clamp(min=1)
+    files50 = ((fcum < 0.5).sum(0) + 1).float() / max(n_sampled_files, 1)
 
     dec = fid * 10 // N_FILES_TOTAL                        # time decile by file index
     decK = torch.bincount(dec * K + lab, minlength=10 * K).view(10, K).float()
@@ -294,6 +308,16 @@ def main():
                            np.nanmean(enr_np, axis=0).clip(1e-12))
 
     radius = m.get("radius")
+
+    # Computed once here (not further down at the affinity table) so the per-cluster table
+    # can carry `maxAff` -- each cluster's affinity to its single nearest neighbour, i.e. a
+    # per-row separation measure. The affinity table below only shows the top pairs, so
+    # without this column a cluster that nearly duplicates another is invisible unless that
+    # specific pair happens to rank in the top-N.
+    aff = build_affinity_matrix(U, means)                  # [K,K]
+    aff_off = aff.clone()
+    aff_off.fill_diagonal_(-1.0)
+    max_aff = aff_off.max(1).values
 
     add("\n## Clusters (sorted by size)\n")
     add("*How to read this: one row per cluster, largest first. Each column is computed "
@@ -311,40 +335,75 @@ def main():
         "cluster's tokens. **Low = geographically localized**, high = spread over the globe.*")
     add("- *`owned` = number of cells where this cluster is the single most common label "
         "(the cell's *dominant* cluster). A cluster can be present everywhere yet own few cells.*")
-    add(f"- *`files` = share of the {n_sampled_files} sampled time steps (latent files, "
-        "6-hourly) in which the cluster appears at least once. ≈100% ⇒ always present in time.*")
+    add(f"- *`files@50%` = share of the {n_sampled_files} sampled time steps (latent files, "
+        "6-hourly) holding the top 50% of this cluster's tokens — the time-axis twin of "
+        "`cells@50%`. **50% = spread perfectly evenly over time; lower = concentrated into "
+        "fewer snapshots (bursty / seasonal).** This replaces an earlier `files` column that "
+        "counted time steps where the cluster appeared *at all*: with 12,288 cells over "
+        f"{K} clusters that is true almost everywhere, so it read 100% for most clusters and "
+        "carried no information.*")
+    if d > 0:
+        add("- *`maxAff` = this cluster's subspace affinity to its **nearest** neighbour, "
+            "`maxⱼ≠ᵢ ‖UᵢᵀUⱼ‖²_F / d` ∈ [0,1]. A per-cluster separation score: **high ⇒ some "
+            "other cluster spans nearly the same directions**, so this row is a merge "
+            "candidate. The affinity table below lists only the top pairs, so a near-duplicate "
+            "cluster is invisible there unless its pair happens to rank; this column always "
+            "shows it.*")
     add("- *`tCV` = coefficient of variation (std / mean) of the cluster's token share across "
         "the 10 time deciles. **0 = perfectly constant over time; high ⇒ seasonal or trending.** "
         "Computed over populated deciles only, so a sparse sample can't fake a signal.*")
     if radius is not None:
         add("- *`radius` = k-center's native objective: the max distance from the centroid to "
             "any member (a worst-case, not an average like `trace`).*")
-    add(f"\nSpatial columns are over the {int(cells_with_data.sum())} HEALPix cells with data; "
-        f"`cells@50%` = number of cells holding half the cluster's tokens (low = localized); "
-        f"`owned` = cells where this cluster is the most common label; "
-        f"`files` = share of the {n_sampled_files} sampled time steps where the cluster appears; "
-        f"`tCV` = coefficient of variation of its share across time deciles (0 = constant in time)."
-        + (" `radius` = k-center's native objective, the max distance from centroid to any "
-           "member (vs. `tCV`-adjacent `trace`, the mean squared distance k-means/subspace "
-           "optimize)." if radius is not None else "") + "\n")
+    add(f"\nSpatial columns are over the {int(cells_with_data.sum())} HEALPix cells with data. "
+        f"`share` is printed to 2 decimals because the whole range is narrow "
+        f"({float(w.min()):.2%}–{float(w.max()):.2%} on this run) and 1 decimal collapses "
+        f"distinct clusters onto the same value.\n")
     cols = ["cluster", "tokens", "share"]
     if d > 0:
         cols += [f"EVR(top-{d})", "d80"]
-    cols += ["cells@50%", "owned", "files", "tCV"]
+    cols += ["cells@50%", "owned", "files@50%", "tCV"]
+    if d > 0:
+        cols += ["maxAff"]
     if radius is not None:
         cols += ["radius"]
     add("| " + " | ".join(cols) + " |")
     add("|" + "---|" * len(cols))
     for j in cnt.argsort(descending=True).tolist():
-        row = [f"{j}", f"{int(cnt[j]):,}", f"{float(w[j]):.1%}"]
+        row = [f"{j}", f"{int(cnt[j]):,}", f"{float(w[j]):.2%}"]
         if d > 0:
             row += [f"{float(evr[j]):.3f}", f"{int(d80[j])}"]
         tcv = float(temp_cv[j])
-        row += [f"{int(cells50[j])}", f"{int(owned[j])}", f"{float(files_pct[j]):.0%}",
-                ("–" if tcv != tcv else f"{tcv:.2f}")]
+        row += [f"{int(cells50[j])}", f"{int(owned[j])}", f"{float(files50[j]):.1%}",
+                ("–" if tcv != tcv else f"{tcv:.3f}")]
+        if d > 0:
+            row += [f"{float(max_aff[j]):.3f}"]
         if radius is not None:
             row += [f"{float(radius[j]):.2f}"]
         add("| " + " | ".join(row) + " |")
+
+    # ---- Degenerate-cluster flags -------------------------------------------
+    # Surfaced explicitly: in a 128-row table these rows are easy to miss, and each one
+    # means something actionable (a cluster that is never any cell's majority is not a
+    # spatial regime; a near-duplicate pair says K is too large).
+    zero_owned = (owned == 0).nonzero().flatten().tolist()
+    tiny = (w < 0.25 * float(w.mean())).nonzero().flatten().tolist()
+    dup = (max_aff > 0.9).nonzero().flatten().tolist() if d > 0 else []
+    add("\n**Cluster health flags.** ")
+    flags = []
+    if zero_owned:
+        flags.append(f"`owned == 0` (never the majority label in any cell, so it exists only "
+                     f"as a minority everywhere — check it is a real mode and not a "
+                     f"leftover): **{', '.join(map(str, zero_owned))}**")
+    if tiny:
+        flags.append(f"under a quarter of the mean cluster size: "
+                     f"**{', '.join(map(str, tiny))}**")
+    if dup:
+        flags.append(f"`maxAff > 0.9` (near-duplicate of another cluster ⇒ K may be too "
+                     f"large): **{', '.join(map(str, dup))}**")
+    add(" ".join(flags) if flags else
+        "None — every cluster owns at least one cell, none is degenerately small, and no "
+        "pair of subspaces is near-identical.")
 
     # ---- Temporal & spatial analysis (pointer) ------------------------------
     ts_report = os.path.join(args.dir, "temporal_report.md")
@@ -355,12 +414,12 @@ def main():
         "single 12,288-pixel map. Generate it from this run's frozen model + assignments:\n")
     add(f"  ```bash\n  python3 src/analysis/temporal_spatial.py --dir {args.dir} "
         f"--out {args.dir}/temporal_report.md\n  ```")
-    add(f"\nThe per-cluster `cells@50%` / `owned` / `files` / `tCV` columns above are the "
+    add(f"\nThe per-cluster `cells@50%` / `owned` / `files@50%` / `tCV` columns above are the "
         f"compact in-report summary of that same spatial/temporal structure"
         f"{f'; see `{ts_report}`' if os.path.exists(ts_report) else ''}.")
 
     # ---- Subspace affinity (only meaningful with an actual basis, d>0) ------
-    aff = build_affinity_matrix(U, means)                  # [K,K]
+    # `aff` / `max_aff` already computed above for the per-cluster table's maxAff column.
     if d > 0:
         add("\n## Subspace affinity between clusters\n")
         add("*How to read this: a similarity score between every pair of cluster subspaces. "

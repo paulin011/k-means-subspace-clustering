@@ -1,6 +1,6 @@
-# Clustering report (subspace_kmeans) — `runs/clustering/v1_subspace_out`
+# Clustering report (subspace_kmeans) — `runs/clustering/v1_subspace_out/`
 
-*Generated 2026-07-31 15:25 by `analyze_clusters.py`. K=64 affine subspaces of dim 16 in 2048-dim token space, 18,432,000 tokens.*
+*Generated 2026-07-31 17:58 by `analyze_clusters.py`. K=64 affine subspaces of dim 16 in 2048-dim token space, 18,432,000 tokens.*
 
 ## Overview
 
@@ -43,10 +43,10 @@ The core quantities, defined once here:
 - **Reproduce this exact sample** for a new run, with this or any other `cluster_io.py`-based script (e.g. to vary K, d, or the algorithm itself):
 
   ```bash
-  python3 src/clustering/subspace_kmeans.py --files-from runs/clustering/v1_subspace_out/sample.json --seed 0 --tokens-per-file 12288 \
+  python3 src/clustering/subspace_kmeans.py --files-from runs/clustering/v1_subspace_out//sample.json --seed 0 --tokens-per-file 12288 \
       --clusters <K> --out <new_dir>
   ```
-- File ids (first 20 of 1500, full list in `runs/clustering/v1_subspace_out/sample.json`): 21, 25, 50, 77, 100, 102, 106, 109, 114, 117, 122, 126, 130, 140, 142, 150, 156, 158, 160, 167 …
+- File ids (first 20 of 1500, full list in `runs/clustering/v1_subspace_out//sample.json`): 21, 25, 50, 77, 100, 102, 106, 109, 114, 117, 122, 126, 130, 140, 142, 150, 156, 158, 160, 167 …
 
 ## Convergence
 
@@ -111,87 +111,91 @@ Total token variance E‖x−μ_global‖² = **5999**, split into:
 - *`d80` = smallest number of leading PC directions whose eigenvalues reach 80% of `Σ eigvals[j]` (capped at d+1=17 when even all 16 fall short). Low d80 ⇒ a few directions dominate; d80 ≈ d ⇒ a flat spectrum the subspace truncates.*
 - *`cells@50%` = how many of the 12288 HEALPix grid cells hold the top 50% of this cluster's tokens. **Low = geographically localized**, high = spread over the globe.*
 - *`owned` = number of cells where this cluster is the single most common label (the cell's *dominant* cluster). A cluster can be present everywhere yet own few cells.*
-- *`files` = share of the 1500 sampled time steps (latent files, 6-hourly) in which the cluster appears at least once. ≈100% ⇒ always present in time.*
+- *`files@50%` = share of the 1500 sampled time steps (latent files, 6-hourly) holding the top 50% of this cluster's tokens — the time-axis twin of `cells@50%`. **50% = spread perfectly evenly over time; lower = concentrated into fewer snapshots (bursty / seasonal).** This replaces an earlier `files` column that counted time steps where the cluster appeared *at all*: with 12,288 cells over 64 clusters that is true almost everywhere, so it read 100% for most clusters and carried no information.*
+- *`maxAff` = this cluster's subspace affinity to its **nearest** neighbour, `maxⱼ≠ᵢ ‖UᵢᵀUⱼ‖²_F / d` ∈ [0,1]. A per-cluster separation score: **high ⇒ some other cluster spans nearly the same directions**, so this row is a merge candidate. The affinity table below lists only the top pairs, so a near-duplicate cluster is invisible there unless its pair happens to rank; this column always shows it.*
 - *`tCV` = coefficient of variation (std / mean) of the cluster's token share across the 10 time deciles. **0 = perfectly constant over time; high ⇒ seasonal or trending.** Computed over populated deciles only, so a sparse sample can't fake a signal.*
 
-Spatial columns are over the 12288 HEALPix cells with data; `cells@50%` = number of cells holding half the cluster's tokens (low = localized); `owned` = cells where this cluster is the most common label; `files` = share of the 1500 sampled time steps where the cluster appears; `tCV` = coefficient of variation of its share across time deciles (0 = constant in time).
+Spatial columns are over the 12288 HEALPix cells with data. `share` is printed to 2 decimals because the whole range is narrow (0.69%–3.17% on this run) and 1 decimal collapses distinct clusters onto the same value.
 
-| cluster | tokens | share | EVR(top-16) | d80 | cells@50% | owned | files | tCV |
-|---|---|---|---|---|---|---|---|---|
-| 45 | 584,417 | 3.2% | 0.415 | 10 | 304 | 595 | 100% | 0.09 |
-| 63 | 470,382 | 2.6% | 0.458 | 10 | 638 | 363 | 100% | 0.01 |
-| 21 | 451,865 | 2.5% | 0.386 | 10 | 632 | 129 | 100% | 0.07 |
-| 6 | 449,124 | 2.4% | 0.447 | 11 | 178 | 361 | 100% | 0.09 |
-| 32 | 430,777 | 2.3% | 0.410 | 10 | 502 | 515 | 100% | 0.03 |
-| 25 | 428,682 | 2.3% | 0.413 | 10 | 501 | 378 | 100% | 0.07 |
-| 59 | 402,332 | 2.2% | 0.436 | 10 | 498 | 275 | 100% | 0.03 |
-| 0 | 397,508 | 2.2% | 0.441 | 10 | 133 | 266 | 100% | 0.01 |
-| 14 | 394,686 | 2.1% | 0.432 | 10 | 590 | 222 | 100% | 0.08 |
-| 53 | 370,627 | 2.0% | 0.359 | 11 | 394 | 245 | 100% | 0.09 |
-| 28 | 369,699 | 2.0% | 0.488 | 10 | 422 | 185 | 100% | 0.11 |
-| 36 | 363,697 | 2.0% | 0.458 | 10 | 719 | 40 | 100% | 0.03 |
-| 42 | 360,709 | 2.0% | 0.364 | 11 | 564 | 357 | 100% | 0.05 |
-| 54 | 345,673 | 1.9% | 0.458 | 10 | 500 | 143 | 100% | 0.03 |
-| 57 | 343,451 | 1.9% | 0.394 | 11 | 433 | 259 | 100% | 0.03 |
-| 26 | 343,357 | 1.9% | 0.373 | 11 | 375 | 327 | 100% | 0.09 |
-| 10 | 343,079 | 1.9% | 0.397 | 11 | 720 | 199 | 100% | 0.08 |
-| 39 | 337,447 | 1.8% | 0.334 | 12 | 186 | 235 | 100% | 0.07 |
-| 31 | 334,066 | 1.8% | 0.393 | 11 | 605 | 262 | 100% | 0.03 |
-| 56 | 331,721 | 1.8% | 0.381 | 11 | 719 | 74 | 100% | 0.05 |
-| 50 | 310,330 | 1.7% | 0.329 | 12 | 162 | 243 | 100% | 0.09 |
-| 22 | 296,399 | 1.6% | 0.400 | 10 | 579 | 189 | 100% | 0.03 |
-| 52 | 296,298 | 1.6% | 0.341 | 11 | 130 | 269 | 100% | 0.05 |
-| 5 | 288,995 | 1.6% | 0.319 | 12 | 575 | 147 | 100% | 0.08 |
-| 19 | 284,986 | 1.5% | 0.361 | 11 | 410 | 293 | 100% | 0.04 |
-| 44 | 284,571 | 1.5% | 0.337 | 12 | 353 | 200 | 100% | 0.06 |
-| 40 | 282,583 | 1.5% | 0.407 | 10 | 674 | 63 | 100% | 0.03 |
-| 18 | 280,628 | 1.5% | 0.339 | 11 | 155 | 263 | 100% | 0.05 |
-| 47 | 279,483 | 1.5% | 0.332 | 12 | 511 | 135 | 100% | 0.09 |
-| 15 | 278,233 | 1.5% | 0.330 | 12 | 470 | 159 | 100% | 0.12 |
-| 58 | 272,910 | 1.5% | 0.332 | 12 | 290 | 270 | 100% | 0.09 |
-| 23 | 266,842 | 1.4% | 0.352 | 12 | 323 | 195 | 100% | 0.11 |
-| 35 | 266,476 | 1.4% | 0.325 | 12 | 304 | 253 | 100% | 0.06 |
-| 62 | 266,305 | 1.4% | 0.335 | 12 | 173 | 249 | 100% | 0.14 |
-| 24 | 265,301 | 1.4% | 0.367 | 11 | 380 | 102 | 99% | 0.13 |
-| 7 | 263,725 | 1.4% | 0.347 | 12 | 480 | 62 | 100% | 0.10 |
-| 17 | 262,072 | 1.4% | 0.328 | 12 | 501 | 91 | 100% | 0.04 |
-| 41 | 257,959 | 1.4% | 0.325 | 12 | 333 | 220 | 100% | 0.07 |
-| 12 | 256,461 | 1.4% | 0.342 | 12 | 360 | 181 | 100% | 0.06 |
-| 43 | 255,453 | 1.4% | 0.322 | 12 | 274 | 188 | 100% | 0.10 |
-| 61 | 251,433 | 1.4% | 0.361 | 11 | 188 | 228 | 100% | 0.09 |
-| 8 | 248,605 | 1.3% | 0.294 | 12 | 172 | 219 | 100% | 0.08 |
-| 30 | 247,270 | 1.3% | 0.354 | 11 | 129 | 289 | 100% | 0.06 |
-| 4 | 245,235 | 1.3% | 0.362 | 11 | 208 | 202 | 100% | 0.06 |
-| 11 | 244,152 | 1.3% | 0.320 | 12 | 537 | 103 | 100% | 0.04 |
-| 13 | 236,495 | 1.3% | 0.361 | 11 | 499 | 125 | 100% | 0.08 |
-| 2 | 233,132 | 1.3% | 0.396 | 11 | 673 | 52 | 100% | 0.10 |
-| 60 | 219,217 | 1.2% | 0.313 | 12 | 187 | 167 | 100% | 0.02 |
-| 38 | 218,717 | 1.2% | 0.339 | 12 | 194 | 206 | 100% | 0.13 |
-| 34 | 216,743 | 1.2% | 0.304 | 12 | 333 | 86 | 100% | 0.10 |
-| 16 | 215,797 | 1.2% | 0.339 | 12 | 379 | 104 | 100% | 0.12 |
-| 46 | 214,159 | 1.2% | 0.352 | 11 | 438 | 63 | 100% | 0.07 |
-| 48 | 208,742 | 1.1% | 0.350 | 12 | 153 | 175 | 100% | 0.06 |
-| 37 | 207,942 | 1.1% | 0.319 | 12 | 355 | 34 | 100% | 0.06 |
-| 1 | 207,897 | 1.1% | 0.330 | 12 | 290 | 80 | 100% | 0.11 |
-| 55 | 205,599 | 1.1% | 0.310 | 12 | 134 | 162 | 100% | 0.04 |
-| 51 | 203,764 | 1.1% | 0.351 | 11 | 244 | 151 | 97% | 0.13 |
-| 20 | 203,453 | 1.1% | 0.341 | 11 | 210 | 225 | 99% | 0.17 |
-| 33 | 200,349 | 1.1% | 0.398 | 10 | 628 | 2 | 100% | 0.03 |
-| 9 | 196,636 | 1.1% | 0.360 | 11 | 325 | 104 | 100% | 0.12 |
-| 29 | 192,338 | 1.0% | 0.318 | 12 | 187 | 138 | 100% | 0.15 |
-| 3 | 163,374 | 0.9% | 0.361 | 11 | 905 | 0 | 100% | 0.03 |
-| 49 | 154,878 | 0.8% | 0.378 | 11 | 52 | 104 | 100% | 0.00 |
-| 27 | 126,764 | 0.7% | 0.357 | 11 | 125 | 67 | 87% | 0.16 |
+| cluster | tokens | share | EVR(top-16) | d80 | cells@50% | owned | files@50% | tCV | maxAff |
+|---|---|---|---|---|---|---|---|---|---|
+| 45 | 584,417 | 3.17% | 0.415 | 10 | 304 | 595 | 25.1% | 0.093 | 0.633 |
+| 63 | 470,382 | 2.55% | 0.458 | 10 | 638 | 363 | 43.2% | 0.012 | 0.651 |
+| 21 | 451,865 | 2.45% | 0.386 | 10 | 632 | 129 | 33.3% | 0.074 | 0.618 |
+| 6 | 449,124 | 2.44% | 0.447 | 11 | 178 | 361 | 34.6% | 0.088 | 0.654 |
+| 32 | 430,777 | 2.34% | 0.410 | 10 | 502 | 515 | 44.7% | 0.025 | 0.614 |
+| 25 | 428,682 | 2.33% | 0.413 | 10 | 501 | 378 | 28.7% | 0.069 | 0.671 |
+| 59 | 402,332 | 2.18% | 0.436 | 10 | 498 | 275 | 40.2% | 0.027 | 0.636 |
+| 0 | 397,508 | 2.16% | 0.441 | 10 | 133 | 266 | 48.5% | 0.012 | 0.530 |
+| 14 | 394,686 | 2.14% | 0.432 | 10 | 590 | 222 | 30.7% | 0.084 | 0.671 |
+| 53 | 370,627 | 2.01% | 0.359 | 11 | 394 | 245 | 27.0% | 0.086 | 0.613 |
+| 28 | 369,699 | 2.01% | 0.488 | 10 | 422 | 185 | 37.7% | 0.112 | 0.654 |
+| 36 | 363,697 | 1.97% | 0.458 | 10 | 719 | 40 | 40.2% | 0.025 | 0.651 |
+| 42 | 360,709 | 1.96% | 0.364 | 11 | 564 | 357 | 36.5% | 0.053 | 0.579 |
+| 54 | 345,673 | 1.88% | 0.458 | 10 | 500 | 143 | 40.6% | 0.030 | 0.626 |
+| 57 | 343,451 | 1.86% | 0.394 | 11 | 433 | 259 | 41.2% | 0.035 | 0.613 |
+| 26 | 343,357 | 1.86% | 0.373 | 11 | 375 | 327 | 30.9% | 0.089 | 0.663 |
+| 10 | 343,079 | 1.86% | 0.397 | 11 | 720 | 199 | 39.4% | 0.077 | 0.595 |
+| 39 | 337,447 | 1.83% | 0.334 | 12 | 186 | 235 | 41.2% | 0.070 | 0.625 |
+| 31 | 334,066 | 1.81% | 0.393 | 11 | 605 | 262 | 41.4% | 0.026 | 0.663 |
+| 56 | 331,721 | 1.80% | 0.381 | 11 | 719 | 74 | 38.8% | 0.050 | 0.623 |
+| 50 | 310,330 | 1.68% | 0.329 | 12 | 162 | 243 | 35.9% | 0.091 | 0.557 |
+| 22 | 296,399 | 1.61% | 0.400 | 10 | 579 | 189 | 43.3% | 0.026 | 0.614 |
+| 52 | 296,298 | 1.61% | 0.341 | 11 | 130 | 269 | 37.4% | 0.047 | 0.559 |
+| 5 | 288,995 | 1.57% | 0.319 | 12 | 575 | 147 | 33.7% | 0.076 | 0.652 |
+| 19 | 284,986 | 1.55% | 0.361 | 11 | 410 | 293 | 36.1% | 0.042 | 0.608 |
+| 44 | 284,571 | 1.54% | 0.337 | 12 | 353 | 200 | 29.3% | 0.056 | 0.625 |
+| 40 | 282,583 | 1.53% | 0.407 | 10 | 674 | 63 | 40.9% | 0.034 | 0.578 |
+| 18 | 280,628 | 1.52% | 0.339 | 11 | 155 | 263 | 40.2% | 0.053 | 0.600 |
+| 47 | 279,483 | 1.52% | 0.332 | 12 | 511 | 135 | 30.6% | 0.090 | 0.652 |
+| 15 | 278,233 | 1.51% | 0.330 | 12 | 470 | 159 | 30.5% | 0.117 | 0.610 |
+| 58 | 272,910 | 1.48% | 0.332 | 12 | 290 | 270 | 32.9% | 0.089 | 0.597 |
+| 23 | 266,842 | 1.45% | 0.352 | 12 | 323 | 195 | 27.6% | 0.109 | 0.548 |
+| 35 | 266,476 | 1.45% | 0.325 | 12 | 304 | 253 | 31.3% | 0.058 | 0.584 |
+| 62 | 266,305 | 1.44% | 0.335 | 12 | 173 | 249 | 27.2% | 0.137 | 0.566 |
+| 24 | 265,301 | 1.44% | 0.367 | 11 | 380 | 102 | 22.7% | 0.128 | 0.620 |
+| 7 | 263,725 | 1.43% | 0.347 | 12 | 480 | 62 | 24.7% | 0.103 | 0.577 |
+| 17 | 262,072 | 1.42% | 0.328 | 12 | 501 | 91 | 40.7% | 0.037 | 0.597 |
+| 41 | 257,959 | 1.40% | 0.325 | 12 | 333 | 220 | 39.6% | 0.075 | 0.643 |
+| 12 | 256,461 | 1.39% | 0.342 | 12 | 360 | 181 | 25.1% | 0.060 | 0.560 |
+| 43 | 255,453 | 1.39% | 0.322 | 12 | 274 | 188 | 37.8% | 0.104 | 0.540 |
+| 61 | 251,433 | 1.36% | 0.361 | 11 | 188 | 228 | 32.2% | 0.094 | 0.600 |
+| 8 | 248,605 | 1.35% | 0.294 | 12 | 172 | 219 | 39.1% | 0.076 | 0.574 |
+| 30 | 247,270 | 1.34% | 0.354 | 11 | 129 | 289 | 39.5% | 0.055 | 0.647 |
+| 4 | 245,235 | 1.33% | 0.362 | 11 | 208 | 202 | 37.7% | 0.065 | 0.647 |
+| 11 | 244,152 | 1.32% | 0.320 | 12 | 537 | 103 | 37.7% | 0.037 | 0.634 |
+| 13 | 236,495 | 1.28% | 0.361 | 11 | 499 | 125 | 36.5% | 0.078 | 0.638 |
+| 2 | 233,132 | 1.26% | 0.396 | 11 | 673 | 52 | 38.8% | 0.097 | 0.609 |
+| 60 | 219,217 | 1.19% | 0.313 | 12 | 187 | 167 | 41.5% | 0.019 | 0.545 |
+| 38 | 218,717 | 1.19% | 0.339 | 12 | 194 | 206 | 22.9% | 0.129 | 0.566 |
+| 34 | 216,743 | 1.18% | 0.304 | 12 | 333 | 86 | 37.6% | 0.095 | 0.564 |
+| 16 | 215,797 | 1.17% | 0.339 | 12 | 379 | 104 | 28.1% | 0.122 | 0.620 |
+| 46 | 214,159 | 1.16% | 0.352 | 11 | 438 | 63 | 32.9% | 0.071 | 0.638 |
+| 48 | 208,742 | 1.13% | 0.350 | 12 | 153 | 175 | 35.6% | 0.056 | 0.549 |
+| 37 | 207,942 | 1.13% | 0.319 | 12 | 355 | 34 | 25.3% | 0.064 | 0.643 |
+| 1 | 207,897 | 1.13% | 0.330 | 12 | 290 | 80 | 19.4% | 0.110 | 0.508 |
+| 55 | 205,599 | 1.12% | 0.310 | 12 | 134 | 162 | 41.4% | 0.041 | 0.502 |
+| 51 | 203,764 | 1.11% | 0.351 | 11 | 244 | 151 | 19.7% | 0.127 | 0.611 |
+| 20 | 203,453 | 1.10% | 0.341 | 11 | 210 | 225 | 16.9% | 0.172 | 0.593 |
+| 33 | 200,349 | 1.09% | 0.398 | 10 | 628 | 2 | 40.6% | 0.029 | 0.548 |
+| 9 | 196,636 | 1.07% | 0.360 | 11 | 325 | 104 | 19.5% | 0.122 | 0.620 |
+| 29 | 192,338 | 1.04% | 0.318 | 12 | 187 | 138 | 22.7% | 0.146 | 0.597 |
+| 3 | 163,374 | 0.89% | 0.361 | 11 | 905 | 0 | 42.3% | 0.030 | 0.583 |
+| 49 | 154,878 | 0.84% | 0.378 | 11 | 52 | 104 | 48.6% | 0.005 | 0.420 |
+| 27 | 126,764 | 0.69% | 0.357 | 11 | 125 | 67 | 17.1% | 0.163 | 0.486 |
+
+**Cluster health flags.** 
+`owned == 0` (never the majority label in any cell, so it exists only as a minority everywhere — check it is a real mode and not a leftover): **3**
 
 ## Temporal & spatial analysis
 
 The world map, 12 monthly dominant-cluster maps, and seasonal profiles live in the dedicated **temporal & spatial report** (`temporal_spatial.py`), read at calendar (monthly) resolution with continent outlines and a smooth heatmap — clearer than a single 12,288-pixel map. Generate it from this run's frozen model + assignments:
 
   ```bash
-  python3 src/analysis/temporal_spatial.py --dir runs/clustering/v1_subspace_out --out runs/clustering/v1_subspace_out/temporal_report.md
+  python3 src/analysis/temporal_spatial.py --dir runs/clustering/v1_subspace_out/ --out runs/clustering/v1_subspace_out//temporal_report.md
   ```
 
-The per-cluster `cells@50%` / `owned` / `files` / `tCV` columns above are the compact in-report summary of that same spatial/temporal structure.
+The per-cluster `cells@50%` / `owned` / `files@50%` / `tCV` columns above are the compact in-report summary of that same spatial/temporal structure.
 
 ## Subspace affinity between clusters
 

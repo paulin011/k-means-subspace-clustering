@@ -106,8 +106,23 @@ One row per cluster:
   Ordering-independent.
 - **owned** — number of cells where this cluster is the *most frequent* (dominant) label —
   how much "territory" it wins on the map.
-- **files** — fraction of the sampled time steps (files) in which the cluster appears at
-  all. ≈ 100% ⇒ persistent in time; low ⇒ intermittent.
+- **files@50%** — fraction of the sampled time steps (files) that together hold half this
+  cluster's tokens: the time-axis twin of `cells@50%`. It has a fixed reference point —
+  a cluster spread perfectly evenly over time needs half the steps to reach half its
+  tokens, so **50% ⇒ temporally uniform**, and **lower ⇒ concentrated into fewer snapshots**
+  (bursty / seasonal). On v6 it runs 17%…50%.
+  *This replaced a `files` column that reported the fraction of time steps in which the
+  cluster appeared **at all**. That test is vacuous here: with 12,288 cells spread over
+  K=128 clusters, every cluster turns up somewhere in nearly every snapshot, so the column
+  read exactly 100% for 112 of 128 clusters and took only 12 distinct values overall. Any
+  presence measure needs a threshold to carry information; `files@50%` avoids picking an
+  arbitrary one, separates 126/128 clusters, and correlates only 0.13 with cluster size so
+  it is not merely restating `share`.*
+- **maxAff** (`d > 0`) — this cluster's subspace affinity to its *nearest* neighbour,
+  `maxⱼ≠ᵢ ‖UᵢᵀUⱼ‖²_F / d` ∈ [0,1]. A per-row separation score: **high ⇒ another cluster
+  spans nearly the same directions**, making this row a merge candidate and hinting K is
+  too large. The affinity table lists only the top pairs globally, so a near-duplicate is
+  invisible there unless its pair happens to rank; this column always surfaces it.
 - **tCV** — temporal coefficient of variation: std/mean of the cluster's enrichment across
   the 10 time deciles. **0 ⇒ constant rate over time; high ⇒ concentrated in certain
   periods** (seasonal/trend signature).
@@ -116,6 +131,16 @@ One row per cluster:
   (mean squared distance, what k-means/subspace_kmeans minimize). A large radius relative
   to trace flags an **outlier-driven cluster**.
 
+**Cluster health flags** — a one-line summary printed under the table, because in a
+128-row table a degenerate row is easy to miss and each flag is actionable:
+
+- `owned == 0` — the cluster is never any cell's majority label, so it exists only as a
+  minority everywhere. It is not a spatial regime; check it is a real mode rather than a
+  leftover. (v6 flags clusters 13 and 98.)
+- **size < ¼ of the mean cluster size** — degenerately small; the re-seed guard should
+  normally prevent this, so it appearing means the guard is being outrun.
+- `maxAff > 0.9` — near-duplicate of another cluster ⇒ K is probably too large.
+
 How the spatial/temporal stats are built:
 
 - `cell_counts` `[N_CELLS, K]` — token counts per (cell, cluster).
@@ -123,6 +148,9 @@ How the spatial/temporal stats are built:
   are in the temporal & spatial report).
 - `cells@50%` — from each cluster's sorted-descending cumulative distribution across cells
   (the cells holding the first 50%).
+- `files@50%` — the same construction on the file axis: `file_counts [N_FILES, K]` sorted
+  descending per cluster, cumulated, and cut at 50%, then divided by the number of sampled
+  files so the "50% = uniform in time" reference holds regardless of sample size.
 - `enrich` `[10, K]` = `(decK / counts) / (dec_tot / T)` — ratio of a cluster's observed
   share in a time decile to its expected share if temporally flat. **1.0 = flat**, ≫ 1 =
   concentrated there. The decile is derived from the global file index (0…13020). (The
@@ -145,7 +173,7 @@ For `d = 0` this section is skipped (point clusters have no basis to compare).
 
 The world map and the temporal/seasonal analysis moved out of the main report into a
 dedicated `temporal_spatial.py` report. (The main report keeps the per-cluster `tCV` /
-`files` columns — a compact temporal summary — and points here.) All maps share one color
+`files@50%` columns — a compact temporal summary — and points here.) All maps share one color
 scale from `affinity_ordered_colors` (spectral seriation of the affinity matrix → `turbo`,
 so similar clusters share hues); the renderer (`worldmap.py`) adds **continent outlines**
 (cached Natural Earth 110m coastlines) and a smooth **heatmap** — the per-cell RGB is
