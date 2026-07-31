@@ -232,6 +232,29 @@ The **world map and the temporal/seasonal analysis live in a separate report** �
 spatial/temporal columns and a pointer to `temporal_report.md`. Every metric in
 `report.md` is defined and interpreted in **[METRICS.md](docs/METRICS.md)**.
 
+**A metric only earns its column if it separates clusters.** Two changes came out of
+auditing the v6 table for exactly that:
+
+- `files` ("share of time steps where the cluster appears at all") was **vacuous** — with
+  12,288 cells over K=128 clusters every cluster shows up somewhere in nearly every
+  snapshot, so it read exactly 100% for 112 of 128 clusters and took 12 distinct values
+  overall. Replaced by **`files@50%`**, the time-axis twin of `cells@50%`: the share of
+  time steps holding half the cluster's tokens. Threshold-free, separates 126/128
+  clusters, correlates only 0.13 with cluster size, and has a fixed reference point —
+  **50% = perfectly uniform in time, lower = bursty/seasonal** (v6 spans 17%…50%).
+- Added **`maxAff`**, each cluster's affinity to its single nearest neighbour. The affinity
+  table only lists the top pairs globally, so a near-duplicate cluster was invisible there
+  unless its pair happened to rank; this column always surfaces it.
+
+Two formatting fixes in the same pass: `share` and `tCV` were quantised by their print
+precision (14 and 19 distinct values across 128 clusters), now 72 and 85.
+
+A **cluster health flags** line under the table calls out degenerate rows that are easy to
+miss in a 128-row table: `owned == 0` (never any cell's majority ⇒ not a spatial regime),
+size under ¼ of the mean, and `maxAff > 0.9` (near-duplicate ⇒ K too large). Validation
+that it works: run without being told, it independently rediscovers the known stranded
+clusters — v4's singleton (65) and v5's two (8, 65).
+
 ### `src/common/worldmap.py` — shared HEALPix geometry, cluster coloring, and map renderer
 
 Imported by both `analyze_clusters.py` and `temporal_spatial.py`, so the two reports
