@@ -1,4 +1,4 @@
-# Temporal & spatial report — `subspace_kmeans_runs/v8_seed2_d64/`
+# Temporal & spatial report — `runs/clustering/v8_seed2_d64/`
 
 *Generated 2026-06-29 12:51 by `temporal_spatial.py`. K=128 affine subspaces (d=64), 86,016,000 tokens from 7000 files. Maps reuse this run's existing assignments (no recomputation).*
 
@@ -35,7 +35,7 @@ Reading the maps:
 
 ## Monthly maps
 
-One dominant-cluster map per calendar month (same color scale as the annual map), revealing the seasonal cycle. Each cell is colored by its most frequent cluster among that month's tokens. Image files are in `subspace_kmeans_runs/v8_seed2_d64/maps/`
+One dominant-cluster map per calendar month (same color scale as the annual map), revealing the seasonal cycle. Each cell is colored by its most frequent cluster among that month's tokens. Image files are in `runs/clustering/v8_seed2_d64/maps/`
 
 
 ## Seasonal maps
@@ -140,4 +140,4 @@ Share of cells whose **dominant cluster changes** between consecutive months (lo
 - **Jan↔Jul changes concentrate in one hemisphere** ⇒ a hemispheric seasonal cycle (opposite phases north/south).
 - Monthly maps share one color scale, so a hue *appearing* in a region month-to-month is a real shift, not a recoloring.
 
-*See the main clustering report (`subspace_kmeans_runs/v8_seed2_d64/report.md`) for convergence, variance decomposition, per-cluster spatial/temporal columns, and subspace affinity.*
+*See the main clustering report (`runs/clustering/v8_seed2_d64/report.md`) for convergence, variance decomposition, per-cluster spatial/temporal columns, and subspace affinity.*

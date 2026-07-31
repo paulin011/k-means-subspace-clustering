@@ -1,5 +1,5 @@
 {
-  "model_dir": "/home/psaher/latents/subspace_kmeans_runs/v6_subspace_big_d64",
+  "model_dir": "runs/clustering/v6_subspace_big_d64",
   "model_fingerprint": "82ca602ed7e7",
   "K": 128,
   "d": 64,

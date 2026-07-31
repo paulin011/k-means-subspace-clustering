@@ -1,6 +1,6 @@
-# Per-file regime signature + residual — `file_signatures/v6_d64`
+# Per-file regime signature + residual — `runs/signatures/v6_d64`
 
-*Generated 2026-06-26 13:57 by `file_signature.py`. Frozen model `subspace_kmeans_runs/v6_subspace_big_d64` (K=128, d=64, affine=True, fingerprint `82ca602ed7e7`). 13,021 files × 12288 cells = 160,002,048 tokens assigned on a single GPU.*
+*Generated 2026-06-26 13:57 by `file_signature.py`. Frozen model `runs/clustering/v6_subspace_big_d64` (K=128, d=64, affine=True, fingerprint `82ca602ed7e7`). 13,021 files × 12288 cells = 160,002,048 tokens assigned on a single GPU.*
 
 ## What this is
 
