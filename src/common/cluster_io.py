@@ -139,7 +139,8 @@ def load_tokens(args):
 
 def save_model(out_dir, *, U, means, eigvals, trace, counts, config, history,
                sampled_files, sample_fingerprint, radius=None,
-               final_obj_per_token=None):
+               final_obj_per_token=None, sigma2=None, mixing=None,
+               soft_counts=None):
     """Validate shapes and write model.pt under the shared cross-algorithm schema."""
     K, D, d = U.shape
     assert means.shape == (K, D), f"means {tuple(means.shape)} != ({K}, {D})"
@@ -158,12 +159,35 @@ def save_model(out_dir, *, U, means, eigvals, trace, counts, config, history,
         obj["radius"] = radius
     if final_obj_per_token is not None:
         obj["final_obj_per_token"] = final_obj_per_token
+    # Soft (EM / MPPCA) extras -- optional, so every existing reader keeps working
+    # unchanged and a hard run's model.pt is byte-identical to before.
+    #   sigma2 [K]      off-subspace noise variance per dim, (trace - sum eigvals)/(D-d)
+    #   mixing [K]      mixture weights pi_j (sum to 1)
+    #   soft_counts [K] fractional cluster sizes sum_n r_nj; `counts` stays the INTEGER
+    #                   bincount of the saved hard labels so the cross-algorithm
+    #                   invariant counts == bincount(assignments['label']) still holds
+    for key, val in (("sigma2", sigma2), ("mixing", mixing), ("soft_counts", soft_counts)):
+        if val is not None:
+            assert val.shape == (K,), f"{key} {tuple(val.shape)} != ({K},)"
+            obj[key] = val
     os.makedirs(out_dir, exist_ok=True)
     torch.save(obj, os.path.join(out_dir, "model.pt"))
 
 
-def save_assignments(out_dir, file_id, cell_id, label):
-    """Write assignments.pt under the shared cross-algorithm schema."""
+def save_assignments(out_dir, file_id, cell_id, label, resp_idx=None, resp_w=None):
+    """Write assignments.pt under the shared cross-algorithm schema.
+
+    `label` is always the hard assignment (argmax responsibility for a soft run), so
+    every existing consumer works unchanged. A soft run additionally stores truncated
+    responsibilities: `resp_idx [T, m]` int16 cluster ids and `resp_w [T, m]` float16
+    weights summing to 1 per row, with resp_idx[:, 0] == label (slots are sorted by
+    descending weight).
+    """
+    obj = {"file_id": file_id, "cell_id": cell_id, "label": label}
+    if resp_idx is not None:
+        assert resp_w is not None and resp_idx.shape == resp_w.shape, \
+            "resp_idx and resp_w must both be given with matching shape"
+        assert resp_idx.shape[0] == label.shape[0], "resp_idx rows must match label"
+        obj["resp_idx"], obj["resp_w"] = resp_idx, resp_w
     os.makedirs(out_dir, exist_ok=True)
-    torch.save({"file_id": file_id, "cell_id": cell_id, "label": label},
-               os.path.join(out_dir, "assignments.pt"))
+    torch.save(obj, os.path.join(out_dir, "assignments.pt"))

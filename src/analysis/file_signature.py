@@ -39,8 +39,17 @@ the buffer, and continue. I/O dominates (~17 files/s => ~13 min to read 1.3 TB);
 compute is negligible, so one GPU suffices and the broken inter-GPU P2P never enters.
 
 Outputs (under <out>/):
+  residual_map.npy   [N, 12288] float32 -- the per-CELL residual, i.e. the same quantity
+                     as `mean_residual` but WITHOUT the reduction over cells. This is the
+                     per-cell-per-timestep outlier score (goal: outliers for fine-tuning).
+                     Same [T, 12288] NESTED grid as persistence/forecast error, so the maps
+                     gather onto each other directly. Skip with --no-cell-maps.
+  label_map.npy      [N, 12288] int16 -- assigned cluster per cell (the full-dataset
+                     dynamic label map; assignments.pt only covers the sampled files).
   signatures.npz     canonical: mix[N,K], mean_residual/total/within/captured[N],
                      residual_frac[N], dominant[N], rare_exposure[N], n_tokens[N],
+                     cell_mean_residual[12288], cell_std_residual[12288] (the per-cell
+                     climatology that makes residual_map comparable across cells),
                      file_idx[N], datetime_hour[N] (numpy datetime64[h]).
   file_summary.csv   one row per file: id, idx, date, y/m/d/h, dom_cluster, dom_frac,
                      rare_exposure, mean_residual, residual_frac, mean_total.
@@ -92,6 +101,9 @@ def parse_args():
     p.add_argument("--chunk-size", type=int, default=262144, help="tokens per GPU chunk")
     p.add_argument("--load-workers", type=int, default=24)
     p.add_argument("--gpu", type=int, default=0, help="CUDA device index (single GPU)")
+    p.add_argument("--no-cell-maps", action="store_true",
+                   help="skip residual_map.npy / label_map.npy (the per-CELL outlier "
+                        "arrays, ~640 MB + ~320 MB at 13,021 files)")
     return p.parse_args()
 
 
@@ -175,6 +187,32 @@ def main():
     total_sum = torch.zeros(W, dtype=torch.float64, device=device)
     stored_idx = np.full(W, -1, dtype=np.int64)
 
+    # ---- per-CELL outlier maps (the per-token residual, kept instead of reduced) --
+    # The assignment kernel below already computes a residual for every one of the
+    # 12288 cells; the per-file accumulators throw that resolution away. Keeping it
+    # costs one extra write per batch and turns outlier detection from per-timestep
+    # into per-cell-per-timestep. Rows follow `files` order (row i <-> file_ids[i],
+    # the same order as signatures.npz / file_summary.csv), NOT file id, so a
+    # --limit/--files-from subset stays dense. Written as .npy memmaps so the full
+    # 13,021 x 12,288 arrays never have to sit in RAM, and so downstream analysis can
+    # np.load(..., mmap_mode="r") a single row/column without reading 640 MB.
+    cell_maps = not args.no_cell_maps
+    os.makedirs(args.out, exist_ok=True)
+    if cell_maps:
+        resid_map = np.lib.format.open_memmap(
+            os.path.join(args.out, "residual_map.npy"), mode="w+",
+            dtype=np.float32, shape=(N, N_CELLS))
+        label_map = np.lib.format.open_memmap(
+            os.path.join(args.out, "label_map.npy"), mode="w+",
+            dtype=np.int16, shape=(N, N_CELLS))
+        # staging buffers, allocated once at max batch size and sliced to [:M]
+        buf_resid = torch.empty(args.batch_files * N_CELLS, dtype=torch.float32, device=device)
+        buf_lab = torch.empty(args.batch_files * N_CELLS, dtype=torch.int16, device=device)
+        cell_sum = torch.zeros(N_CELLS, dtype=torch.float64, device=device)
+        cell_sqsum = torch.zeros(N_CELLS, dtype=torch.float64, device=device)
+        print(f"  writing per-cell maps: residual_map.npy [{N},{N_CELLS}] float32 "
+              f"({N * N_CELLS * 4 / 2**30:.2f} GiB) + label_map.npy int16", flush=True)
+
     # ---- streaming assignment -------------------------------------------------
     nb = (N + args.batch_files - 1) // args.batch_files
     for bi, i0 in enumerate(range(0, N, args.batch_files)):
@@ -199,6 +237,13 @@ def main():
                 proj = pe
             R = dist2 - proj                                       # [b,K]  residual to each subspace
             vals, a = R.min(1)                                     # assign by min residual
+            if cell_maps:
+                # keep the per-token result before it is reduced away; c0 indexes the
+                # batch's token array, which is laid out file-major then cell-ordered
+                # (load_batch writes data[pos*12288 : (pos+1)*12288] = latent rows), so
+                # a [len(batch), 12288] view is exactly [file, HEALPix cell].
+                buf_resid[c0:c0 + X.shape[0]] = vals.clamp_min(0).float()
+                buf_lab[c0:c0 + X.shape[0]] = a.to(torch.int16)
             ad = dist2.gather(1, a.unsqueeze(1)).squeeze(1)       # within (= dist to assigned mu)
             ap = proj.gather(1, a.unsqueeze(1)).squeeze(1)        # captured by assigned subspace
             tot = ((X - mu_g) ** 2).sum(1)                        # total to frozen global mean
@@ -208,6 +253,13 @@ def main():
             within_sum.index_add_(0, fc, ad.clamp_min(0).double())
             cap_sum.index_add_(0, fc, ap.clamp_min(0).double())
             total_sum.index_add_(0, fc, tot.double())
+        if cell_maps:
+            nbf = len(batch)
+            rm = buf_resid[:M].view(nbf, N_CELLS)
+            cell_sum += rm.sum(0).double()                          # per-cell climatology
+            cell_sqsum += (rm.double() ** 2).sum(0)
+            resid_map[i0:i0 + nbf] = rm.cpu().numpy()
+            label_map[i0:i0 + nbf] = buf_lab[:M].view(nbf, N_CELLS).cpu().numpy()
         del data, fid
         el = time.time() - t_start
         done = i0 + len(batch)
@@ -247,8 +299,22 @@ def main():
     hours = (dt.astype("datetime64[h]") - dt.astype("datetime64[D]")).astype(int)
 
     # ============================= write outputs ===============================
-    os.makedirs(args.out, exist_ok=True)
-    np.savez(os.path.join(args.out, "signatures.npz"),
+    # Per-cell climatology: the raw residual is not comparable across cells (a
+    # storm-track cell is intrinsically harder than a subtropical one), so the useful
+    # outlier score is the anomaly against each cell's OWN temporal norm:
+    #     z[t, cell] = (residual_map[t, cell] - cell_mean[cell]) / cell_std[cell]
+    # These two vectors are what makes that normalisation possible without a second
+    # pass over the 640 MB map.
+    cell_extra = {}
+    if cell_maps:
+        resid_map.flush()
+        label_map.flush()
+        cell_mean = (cell_sum / max(N, 1)).cpu().numpy()
+        cell_std = np.sqrt(np.clip((cell_sqsum / max(N, 1)).cpu().numpy() - cell_mean ** 2,
+                                   0.0, None))
+        cell_extra = {"cell_mean_residual": cell_mean.astype(np.float32),
+                      "cell_std_residual": cell_std.astype(np.float32)}
+    np.savez(os.path.join(args.out, "signatures.npz"), **cell_extra,
              mix=mix.astype(np.float32), mean_residual=mean_resid.astype(np.float32),
              mean_total=mean_total.astype(np.float32), mean_within=mean_within.astype(np.float32),
              mean_captured=mean_cap.astype(np.float32), residual_frac=resid_frac.astype(np.float32),
@@ -293,6 +359,20 @@ def main():
             "residual_frac": "mean_residual / mean_total  (total = E||x-mu_global||^2, "
                              "mu_global frozen from the trained cluster means)",
             "mix_k": "fraction of the file's 12288 cells assigned to cluster k"},
+        "cell_maps": ({
+            "residual_map.npy": f"[{N}, {N_CELLS}] float32 -- residual_(assigned)(x) for "
+                                "every HEALPix cell of every file (NESTED ordering); row i "
+                                "is file_ids[i], NOT file id i",
+            "label_map.npy": f"[{N}, {N_CELLS}] int16 -- assigned cluster per cell, same "
+                             "row convention",
+            "row_axis": "rows follow the sorted file list, identical to signatures.npz / "
+                        "file_summary.csv row order (file_ids)",
+            "normalisation": "z[t,cell] = (residual_map[t,cell] - cell_mean_residual[cell]) "
+                             "/ cell_std_residual[cell]  -- raw residuals are not comparable "
+                             "across cells",
+            "aligns_with": "same [T, 12288] NESTED grid as runs/persistence/*/err_persist.npy "
+                           "(one row shorter there: transitions, not states)",
+        } if cell_maps else None),
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "wall_time_min": round((time.time() - t_start) / 60, 1),
     }
@@ -352,6 +432,41 @@ def main():
     for r, i in enumerate(top_rare, 1):
         add(f"| {r} | {int(file_ids[i])} | {dt_h[i]} | {rare_exposure[i]:.1%} | "
             f"{resid_frac[i]:.1%} | {int(dominant[i])} |")
+    if cell_maps:
+        add("\n## Per-cell outlier map\n")
+        add("*How to read this: `residual_frac` above scores a whole snapshot. "
+            "`residual_map.npy` `[N, 12288]` keeps the **same residual per HEALPix cell**, so an "
+            "outlier can be localised to where on the globe it happened instead of only when. "
+            "It is the identical quantity — averaging a row reproduces that row's "
+            "`mean_residual` exactly — just not reduced over cells.*\n")
+        add("Raw residuals are **not comparable between cells**: an intrinsically hard cell "
+            "(storm track) outscores an easy one (subtropical ocean) in every snapshot. Score "
+            "outliers against each cell's own temporal norm, using the climatology vectors "
+            "stored in `signatures.npz`:\n")
+        add("```python\n"
+            "import numpy as np\n"
+            f"R = np.load('{args.out}/residual_map.npy', mmap_mode='r')   # [N, 12288]\n"
+            f"s = np.load('{args.out}/signatures.npz')\n"
+            "z = (R - s['cell_mean_residual']) / np.maximum(s['cell_std_residual'], 1e-6)\n"
+            "# z[t, cell] > 4  ->  this cell is far outside its own normal range at step t\n"
+            "```\n")
+        cm, cs = cell_extra["cell_mean_residual"], cell_extra["cell_std_residual"]
+        add(f"- per-cell mean residual across the {N:,} steps: min **{cm.min():.0f}** / "
+            f"median **{np.median(cm):.0f}** / max **{cm.max():.0f}** "
+            f"({cm.max() / max(cm.min(), 1e-9):.1f}× spread — this is exactly why the "
+            "normalisation is needed).")
+        add(f"- per-cell temporal std: median **{np.median(cs):.0f}** "
+            f"(median std/mean = {np.median(cs / np.maximum(cm, 1e-9)):.1%}).")
+        add(f"- hardest cells (highest mean residual, NESTED ids): "
+            + ", ".join(str(int(i)) for i in np.argsort(cm)[::-1][:10]) + ".")
+        add(f"- easiest cells: " + ", ".join(str(int(i)) for i in np.argsort(cm)[:10]) + ".\n")
+        add("`label_map.npy` `[N, 12288]` int16 carries the assigned cluster per cell over the "
+            "**whole dataset** — the dynamic counterpart to `assignments.pt`, which only covers "
+            "the sampled files. Both arrays sit on the same NESTED `[T, 12288]` grid as "
+            "`err_persist.npy`, so they gather onto each other with no remapping: intersect them "
+            "to separate *anomalous because rapidly changing* (high persistence error) from "
+            "*anomalous because unmodelled* (high residual, low persistence error).\n")
+
     add("\n## How to use for goal 1 (timestamp selection)\n")
     add("- **Diversity / coverage sampling** (anti-redundancy): `cluster_mix.csv` is the feature "
         "matrix; run k-center / farthest-point in mix-space to pick a minimal covering subset — "
@@ -368,6 +483,10 @@ def main():
     add("- `file_summary.csv` — one row per file (human-readable, sorted by file_id).")
     add("- `cluster_mix.csv` — wide mix matrix for pandas / sklearn timestamp selection.")
     add("- `manifest.json` — provenance, formulas, rare-cluster list.")
+    if cell_maps:
+        add(f"- `residual_map.npy` — `[{N}, {N_CELLS}]` float32 per-cell residual "
+            f"({N * N_CELLS * 4 / 2**30:.2f} GiB; load with `mmap_mode='r'`).")
+        add(f"- `label_map.npy` — `[{N}, {N_CELLS}]` int16 per-cell assigned cluster.")
     with open(os.path.join(args.out, "report.md"), "w") as f:
         f.write("\n".join(L))
 

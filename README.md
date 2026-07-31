@@ -102,6 +102,46 @@ K-means generalized to affine subspaces: each cluster is a mean μⱼ plus an or
 basis `Uⱼ [2048, d]`, and each token is assigned to the cluster with the smallest
 orthogonal residual ‖x−μⱼ‖² − ‖Uⱼᵀ(x−μⱼ)‖².
 
+That residual is the **full distance to the affine subspace**, not to its centre: it is
+algebraically identical to ‖(I − UⱼUⱼᵀ)(x−μⱼ)‖² (verified to 6e-06 relative), expanded into
+norms and one `[B,2048]×[2048,K·d]` matmul so the projection costs one matmul instead of K
+dense 2048×2048 projectors. Assigning by centroid distance instead would move 54.4% of
+tokens; the d=64 subspaces absorb 65.6% of the distance-to-centre.
+
+#### Soft assignment (`--soft`)
+
+`--soft` replaces the hard argmin with EM on the matching **MPPCA** mixture
+(`Cⱼ = Uⱼ diag(λⱼ) Uⱼᵀ + σ²ⱼ(I − UⱼUⱼᵀ)`), so a token carries a distribution over clusters
+instead of one label. The Mahalanobis and log-det terms decompose into quantities the
+kernel already computes, `R_j/σ²ⱼ + Σᵢzᵢ²/λᵢ` and `Σᵢlog λᵢ + (D−d)log σ²ⱼ`, so the extra
+cost is two `[B,K,d]` einsums.
+
+Why bother, given the partition barely moves (the likelihood rule flips only ~3.7% of
+assignments)? Because **~31% of tokens sit within a 10% residual margin of a second
+cluster** — for those the hard label discards real information and injects seed-dependent
+noise. Soft assignment is uncertainty quantification, not a better partition; do not expect
+the residual to drop.
+
+- `--soft-topm` (default 4) truncates responsibilities to the best m clusters, capping the
+  M-step at ~m× the hard cost instead of K×. Iteration 1 is always hard (no bases yet).
+- **`--soft-temp` matters more than it looks.** At T=1 (the literal likelihood) the D=2048
+  score is so sharply peaked that responsibilities collapse to one-hot — measured mean
+  top-1 weight **0.993**, i.e. a slower hard k-subspaces. The likelihood treats all 2048
+  dimensions as independent evidence while the data has only ~121 effective dimensions, so
+  **T ≈ 2048/121 ≈ 17** removes that overcounting (deterministic-annealing EM). Smoke test
+  at T=17: mean top-1 **0.877**, 37.2% of tokens below 0.9 confidence — closely matching the
+  independently measured 31% near-tie fraction — for a 0.1% likelihood cost.
+- Outputs are **purely additive**: `model.pt` gains `sigma2`/`mixing`/`soft_counts`,
+  `assignments.pt` gains `resp_idx [T,m]` int16 + `resp_w [T,m]` float16. `label` remains
+  the argmax and `counts` the integer bincount of it, so every existing reader
+  (`analyze_clusters.py`, `temporal_spatial.py`, `holdout_eval.py`, `file_signature.py`)
+  works on a soft run unchanged.
+
+```bash
+python3 src/clustering/subspace_kmeans.py --files-from runs/clustering/v6_subspace_big_d64/sample.json \
+    -K 128 -d 64 --soft --soft-temp 17 --max-ram-gb 420 --out runs/clustering/v10_soft_d64
+```
+
 Algorithm details:
 
 - **One streaming sweep per iteration** over the sampled tokens (held in RAM as fp16),
@@ -286,6 +326,38 @@ per held-out set:
   quartile by token share; high = rich in rare regimes — candidates for class-balancing);
 - the reconstructed calendar date (`2014-01-01 + idx×6h`; `idx` == file id, confirmed).
 
+**Per-cell outlier maps (`residual_map.npy` / `label_map.npy`).** The assignment kernel
+computes a residual for every one of the 12,288 cells and the per-file reduction throws that
+resolution away. Keeping it costs one extra write per batch and is what turns outlier
+detection — the main goal for later fine-tuning — from *per-timestep* into
+*per-cell-per-timestep*:
+
+- `residual_map.npy` `[N, 12288]` float32 (0.60 GiB at 13,021 files) — the per-cell residual.
+  Averaging a row reproduces that row's `mean_residual` exactly (verified to 6e-08 relative).
+- `label_map.npy` `[N, 12288]` int16 — the assigned cluster per cell, over the **whole**
+  dataset. This is the dynamic counterpart to `assignments.pt`, which only covers the sampled
+  files; a row's histogram reproduces that row's `mix` exactly.
+- Rows follow the sorted file list (row *i* ↔ `file_ids[i]`), matching `signatures.npz` /
+  `file_summary.csv` row order — **not** file id, so `--limit` / `--files-from` subsets stay
+  dense. Written as `.npy` memmaps, so load with `mmap_mode="r"` and never pay 640 MB to read
+  one row.
+- **Normalise before ranking.** Raw residuals are not comparable across cells — the per-cell
+  mean spans **15.7×** (273 … 4276), because a storm-track cell is intrinsically harder than a
+  subtropical one. `signatures.npz` therefore also carries `cell_mean_residual[12288]` and
+  `cell_std_residual[12288]`, the per-cell temporal climatology:
+
+  ```python
+  R = np.load("runs/signatures/v6_d64/residual_map.npy", mmap_mode="r")
+  s = np.load("runs/signatures/v6_d64/signatures.npz")
+  z = (R - s["cell_mean_residual"]) / np.maximum(s["cell_std_residual"], 1e-6)
+  # z[t, cell] > 4  ->  that cell is far outside its own normal range at step t
+  ```
+
+Both arrays sit on the same NESTED `[T, 12288]` grid as `runs/persistence/*/err_persist.npy`,
+so they gather onto each other with no remapping — intersecting them separates *anomalous
+because rapidly changing* (high persistence error) from *anomalous because unmodelled* (high
+residual, low persistence error). Pass `--no-cell-maps` to skip writing them.
+
 **Streaming, not load-all:** the full dataset is ~656 GB as fp16 > 512 GB RAM, so files are
 loaded in batches (`--batch-files`, ~25 GB each at the default 500), assigned on a single
 GPU, and scattered into `[N_FILES]`-wide accumulators. I/O dominates (~17 files/s ⇒ ~13 min
@@ -293,7 +365,7 @@ to read all 1.3 TB), so one GPU suffices and the broken inter-GPU P2P never ente
 
 ```bash
 # full run over all 13,021 files (~15 min); writes signatures.npz, file_summary.csv,
-# cluster_mix.csv, manifest.json, report.md under --out
+# cluster_mix.csv, manifest.json, report.md, residual_map.npy, label_map.npy under --out
 python3 src/analysis/file_signature.py --out runs/signatures/v6_d64
 # quick correctness check on 200 files: the printed mean mean_residual must match
 # the model's final_obj_per_token (~1888), and mean residual_frac ~31.5%
