@@ -24,7 +24,7 @@ contested clusters are flagged and zero-cell clusters (13, 98) are reported expl
 ALL experiments/outputs go to one fresh dir; NEVER symlink the .pt/.npy inputs (scratch-clobber rule).
 
 USAGE
-  python3 analyze_forecast_error.py --err-dir persistence/v6 --out forecast_error/persist_v6
+  python3 src/analyze_forecast_error.py --err-dir runs/persistence/v6 --out runs/forecast_error/persist_v6
   # when err_forecast.npy lands in <err-dir> alongside err_persist.npy -> full mode automatically.
 """
 
@@ -121,13 +121,13 @@ def knn_density(mix):
 # ----------------------------------------------------------------- main analysis --
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--err-dir", default="persistence/v6")
-    ap.add_argument("--out", default="forecast_error/persist_v6")
-    ap.add_argument("--model", default="subspace_kmeans_runs/v6_subspace_big_d64/model.pt")
-    ap.add_argument("--assignments", default="subspace_kmeans_runs/v6_subspace_big_d64/assignments.pt")
-    ap.add_argument("--signatures", default="file_signatures/v6_d64/signatures.npz")
-    ap.add_argument("--cluster-mix", default="file_signatures/v6_d64/cluster_mix.csv")
-    ap.add_argument("--static-labels", default="forecast_error/static_labels.npy",
+    ap.add_argument("--err-dir", default="runs/persistence/v6")
+    ap.add_argument("--out", default="runs/forecast_error/persist_v6")
+    ap.add_argument("--model", default="runs/clustering/v6_subspace_big_d64/model.pt")
+    ap.add_argument("--assignments", default="runs/clustering/v6_subspace_big_d64/assignments.pt")
+    ap.add_argument("--signatures", default="runs/signatures/v6_d64/signatures.npz")
+    ap.add_argument("--cluster-mix", default="runs/signatures/v6_d64/cluster_mix.csv")
+    ap.add_argument("--static-labels", default="runs/forecast_error/static_labels.npy",
                     help="precomputed static dom map (recomputed from assignments if absent)")
     ap.add_argument("--wmax", type=float, default=8.0, help="max weight (after renorm-to-mean-1)")
     ap.add_argument("--alpha", type=float, default=2.0, help="convexity of score->weight map")

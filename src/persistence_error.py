@@ -19,8 +19,8 @@ cluster / timestamp is between 6h steps (dynamic/stormy vs quiescent).
 Reads the LOCAL copy (key `idx`). The supercomputer copy uses key `idx_num`; --key overrides.
 
 USAGE
-  python3 persistence_error.py --out persistence/v6            # full run, ~10-20 min
-  python3 persistence_error.py --limit 200 --out persistence/_smoke   # quick sanity check
+  python3 src/persistence_error.py --out runs/persistence/v6            # full run, ~10-20 min
+  python3 src/persistence_error.py --limit 200 --out runs/persistence/_smoke   # quick sanity check
 
 OUTPUTS  <out>/
   err_persist.npy  [N,12288] float32   (N = n_files-1)
@@ -96,7 +96,7 @@ class PrefetchReader:
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--latents-dir", default="latents_2")
-    ap.add_argument("--out", default="persistence/v6")
+    ap.add_argument("--out", default="runs/persistence/v6")
     ap.add_argument("--key", default="idx", help="dict key for the index (local=idx, supercomputer=idx_num)")
     ap.add_argument("--limit", type=int, default=0)
     args = ap.parse_args()

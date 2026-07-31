@@ -33,10 +33,10 @@ JOIN TO CLUSTERS
 
 USAGE (supercomputer)
   # 1) cheap verification (loads model, one batch, prints skill vs persistence):
-  python3 extract_forecast_error.py --config <prod.yml> --run-id <id> --selfcheck-only \\
+  python3 src/extract_forecast_error.py --config <prod.yml> --run-id <id> --selfcheck-only \\
       --latents-dir /p/scratch/weatherai/slurm/slurm_weathergen_atmosfo2_copy_dir/WeatherGenerator/latents_2
   # 2) full sweep (detached):
-  setsid nohup python3 extract_forecast_error.py --config <prod.yml> --run-id <id> \\
+  setsid nohup python3 src/extract_forecast_error.py --config <prod.yml> --run-id <id> \\
       --out err_forecast/run0 > err_forecast.log 2>&1 &
 
 OUTPUTS  <out>/
@@ -192,7 +192,7 @@ def main():
     ap.add_argument("--config", required=True, help="production WGen config .yml")
     ap.add_argument("--run-id", required=True, help="trained model run_id (checkpoint to load)")
     ap.add_argument("--latents-dir", default="/p/scratch/weatherai/slurm/slurm_weathergen_atmosfo2_copy_dir/WeatherGenerator/latents_2")
-    ap.add_argument("--out", default="err_forecast/run0")
+    ap.add_argument("--out", default="runs/forecast_raw/run0")
     ap.add_argument("--gpu", type=int, default=0)
     ap.add_argument("--limit", type=int, default=0, help="cap source files (0=all)")
     ap.add_argument("--batch", type=int, default=4, help="samples per GPU forward")

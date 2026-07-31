@@ -25,7 +25,7 @@ exact same tokens (e.g. vary K or d but hold the data fixed), pass the previous 
 sample with --files-from <dir>/sample.json (or <dir>/model.pt) plus the same --seed and
 --tokens-per-file. Runs sharing a sample fingerprint are directly comparable.
 
-Full run:  nohup python3 subspace_kmeans.py > subspace_run.log 2>&1 &
+Full run:  nohup python3 src/subspace_kmeans.py > logs/subspace_run.log 2>&1 &
 """
 
 import argparse
@@ -42,7 +42,7 @@ from cluster_io import (DIM, N_CELLS, N_FILES_TOTAL, load_tokens,
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--src", default="latents_2", help="directory with latent_{i}.pt files")
-    p.add_argument("--out", default="subspace_out", help="output directory")
+    p.add_argument("--out", default="runs/clustering/new_run", help="output directory")
     p.add_argument("--num-files", type=int, default=1500, help="random latent files to sample")
     p.add_argument("--files-from", default=None,
                    help="reuse the exact file list from a previous run's sample.json or "

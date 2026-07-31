@@ -13,12 +13,12 @@
 # (the random-token init) changes. Separate --out dirs; no symlinks anywhere.
 set -u
 cd /home/psaher/latents
-LOG=/home/psaher/latents/seed_sweep.log
+LOG=/home/psaher/latents/logs/seed_sweep.log
 PY=/usr/bin/python3
-V6=subspace_kmeans_runs/v6_subspace_big_d64
+V6=runs/clustering/v6_subspace_big_d64
 SAMPLE=$V6/sample.json
 GAP=1200                                                       # 20 min between seed runs
-REGEN_PAT="subspace_kmeans.py.*--out subspace_kmeans_runs/v6_subspace_big_d64"
+REGEN_PAT="src/subspace_kmeans.py.*--out runs/clustering/v6_subspace_big_d64"
 
 log(){ echo "[$(date '+%F %T')] $*" >> "$LOG"; }
 
@@ -33,7 +33,7 @@ log "regen process exited; verifying regenerated model..."
 # 2. verify the regenerated v6 model is the real K=128 d=64 and counts are reconciled
 if ! $PY - >>"$LOG" 2>&1 <<'PY'
 import torch
-V6 = "subspace_kmeans_runs/v6_subspace_big_d64"
+V6 = "runs/clustering/v6_subspace_big_d64"
 m = torch.load(V6 + "/model.pt", map_location="cpu", weights_only=False)
 a = torch.load(V6 + "/assignments.pt", map_location="cpu", weights_only=False)
 assert tuple(m["U"].shape) == (128, 2048, 64), f"BAD U shape {tuple(m['U'].shape)}"
@@ -49,22 +49,22 @@ fi
 
 # 3. regenerate v6 reports with the fixed code
 log "regenerating v6 reports with fixed code..."
-$PY analyze_clusters.py --dir "$V6" --out "$V6/report.md" >>"$LOG" 2>&1 && log "  v6 report.md done"
-$PY temporal_spatial.py --dir "$V6"                        >>"$LOG" 2>&1 && log "  v6 temporal_report.md done"
+$PY src/analyze_clusters.py --dir "$V6" --out "$V6/report.md" >>"$LOG" 2>&1 && log "  v6 report.md done"
+$PY src/temporal_spatial.py --dir "$V6"                        >>"$LOG" 2>&1 && log "  v6 temporal_report.md done"
 
 # 4. seed runs (v7, v8) -- same sample, different init seed
 N=7
 for SEED in 1 2; do
-  OUT="subspace_kmeans_runs/v${N}_seed${SEED}_d64"
+  OUT="runs/clustering/v${N}_seed${SEED}_d64"
   log "=== seed $SEED -> $OUT (K=128 d=64, --files-from $SAMPLE) ==="
   mkdir -p "$OUT"
-  $PY subspace_kmeans.py --files-from "$SAMPLE" --clusters 128 --dim 64 \
+  $PY src/subspace_kmeans.py --files-from "$SAMPLE" --clusters 128 --dim 64 \
       --seed "$SEED" --tokens-per-file 12288 --max-ram-gb 420 --out "$OUT" >>"$LOG" 2>&1
   rc=$?
   log "  subspace_kmeans seed $SEED exit=$rc"
   if [ $rc -eq 0 ]; then
-    $PY analyze_clusters.py --dir "$OUT" --out "$OUT/report.md" >>"$LOG" 2>&1 && log "  seed$SEED report.md done"
-    $PY temporal_spatial.py --dir "$OUT"                        >>"$LOG" 2>&1 && log "  seed$SEED temporal_report.md done"
+    $PY src/analyze_clusters.py --dir "$OUT" --out "$OUT/report.md" >>"$LOG" 2>&1 && log "  seed$SEED report.md done"
+    $PY src/temporal_spatial.py --dir "$OUT"                        >>"$LOG" 2>&1 && log "  seed$SEED temporal_report.md done"
   else
     log "  seed $SEED FAILED -- skipping its reports."
   fi

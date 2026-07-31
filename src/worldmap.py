@@ -25,7 +25,7 @@ import torch
 NSIDE = 32
 N_CELLS = 12 * NSIDE * NSIDE          # 12,288
 
-DEFAULT_COASTLINE = "ne_110m_coastline.geojson"
+DEFAULT_COASTLINE = "assets/ne_110m_coastline.geojson"
 COASTLINE_URL = ("https://raw.githubusercontent.com/nvkelso/natural-earth-vector/"
                  "master/geojson/ne_110m_coastline.geojson")
 

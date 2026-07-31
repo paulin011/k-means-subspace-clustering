@@ -29,7 +29,7 @@ colors come from `affinity_ordered_colors` (spectral seriation of the subspace-a
 matrix) and are computed **once** and shared across every map so months are comparable.
 
 Usage:
-  python3 temporal_spatial.py --dir subspace_kmeans_runs/v6_subspace_big_d64
+  python3 src/temporal_spatial.py --dir runs/clustering/v6_subspace_big_d64
 """
 
 import argparse
@@ -76,7 +76,7 @@ def file_index_to_month():
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--dir", default="subspace_kmeans_runs/v6_subspace_big_d64",
+    ap.add_argument("--dir", default="runs/clustering/v6_subspace_big_d64",
                     help="directory with model.pt + assignments.pt")
     ap.add_argument("--out", default=None, help="output Markdown (default: <dir>/temporal_report.md)")
     ap.add_argument("--top-seasonal", type=int, default=8,

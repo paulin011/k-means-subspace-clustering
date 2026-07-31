@@ -22,7 +22,7 @@ spatial/temporal columns and points to that report. Map rendering and HEALPix ge
 live in `worldmap.py`.
 
 Usage:
-  python3 analyze_clusters.py --dir subspace_out --out report.md
+  python3 src/analyze_clusters.py --dir runs/clustering/v6_subspace_big_d64 --out report.md
 """
 
 import argparse
@@ -43,7 +43,7 @@ N_FILES_TOTAL = 13021
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--dir", default="subspace_out", help="directory with model.pt + assignments.pt")
+    ap.add_argument("--dir", default="runs/clustering/v6_subspace_big_d64", help="directory with model.pt + assignments.pt")
     ap.add_argument("--out", default=None, help="output Markdown file (default: <dir>/report.md)")
     ap.add_argument("--top-pairs", type=int, default=12, help="most similar cluster pairs to list")
     args = ap.parse_args()
@@ -152,7 +152,7 @@ def main():
         f"{cfg.get('tokens_per_file', N_CELLS)} tokens each, seed {cfg.get('seed', 0)}.")
     add(f"- **Reproduce this exact sample** for a new run, with this or any other "
         f"`cluster_io.py`-based script (e.g. to vary K, d, or the algorithm itself):\n")
-    add(f"  ```bash\n  python3 {method}.py --files-from {args.dir}/sample.json "
+    add(f"  ```bash\n  python3 src/{method}.py --files-from {args.dir}/sample.json "
         f"--seed {cfg.get('seed', 0)} --tokens-per-file {cfg.get('tokens_per_file', N_CELLS)} \\\n"
         f"      --clusters <K> --out <new_dir>\n  ```")
     if sampled_files:
@@ -351,7 +351,7 @@ def main():
         "dedicated **temporal & spatial report** (`temporal_spatial.py`), read at calendar "
         "(monthly) resolution with continent outlines and a smooth heatmap — clearer than a "
         "single 12,288-pixel map. Generate it from this run's frozen model + assignments:\n")
-    add(f"  ```bash\n  python3 temporal_spatial.py --dir {args.dir} "
+    add(f"  ```bash\n  python3 src/temporal_spatial.py --dir {args.dir} "
         f"--out {args.dir}/temporal_report.md\n  ```")
     add(f"\nThe per-cluster `cells@50%` / `owned` / `files` / `tCV` columns above are the "
         f"compact in-report summary of that same spatial/temporal structure"

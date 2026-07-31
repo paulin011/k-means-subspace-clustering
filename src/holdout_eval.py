@@ -38,7 +38,7 @@ Writes <dir>/holdout.json; `analyze_clusters.py` renders a "Held-out generalizat
 section from it automatically on the next run.
 
 Usage:
-  python3 holdout_eval.py --dir subspace_kmeans_runs/v6_subspace_big_d64 --num-files 200
+  python3 src/holdout_eval.py --dir runs/clustering/v6_subspace_big_d64 --num-files 200
 """
 
 import argparse

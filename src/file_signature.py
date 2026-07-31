@@ -51,10 +51,10 @@ Outputs (under <out>/):
 
 Usage:
   # smoke-test correctness on the exact 200 held-out files (residual must match holdout.json):
-  python3 file_signature.py --files-from subspace_kmeans_runs/v6_subspace_big_d64/holdout/files.json \
-      --out file_signatures/_smoke
+  python3 src/file_signature.py --files-from runs/clustering/v6_subspace_big_d64/holdout/files.json \
+      --out runs/signatures/_smoke
   # full run over all 13,021 files:
-  python3 file_signature.py --out file_signatures/v6_d64
+  python3 src/file_signature.py --out runs/signatures/v6_d64
 """
 
 import argparse
@@ -77,7 +77,7 @@ STEP_H = 6                                  # 6-hourly cadence (4/day)
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--dir", default="subspace_kmeans_runs/v6_subspace_big_d64",
+    p.add_argument("--dir", default="runs/clustering/v6_subspace_big_d64",
                    help="run directory with model.pt (the frozen model)")
     p.add_argument("--src", default=None, help="latent dir (default: the run's config src)")
     p.add_argument("--out", required=True, help="output directory for signatures/*")
