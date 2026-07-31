@@ -1,0 +1,89 @@
+{
+  "intersection_files": 6999,
+  "per_month": {
+    "1": {
+      "n_rows": 623,
+      "n_used": 623,
+      "agreement": 0.6331968026852595,
+      "agreement_persist_weighted": 0.533505380153656,
+      "nmi": 0.7655900317107884
+    },
+    "2": {
+      "n_rows": 542,
+      "n_used": 542,
+      "agreement": 0.6290254675007687,
+      "agreement_persist_weighted": 0.5341846942901611,
+      "nmi": 0.7643966972023042
+    },
+    "3": {
+      "n_rows": 594,
+      "n_used": 594,
+      "agreement": 0.6400869864004629,
+      "agreement_persist_weighted": 0.5536440014839172,
+      "nmi": 0.7641210717216264
+    },
+    "4": {
+      "n_rows": 590,
+      "n_used": 590,
+      "agreement": 0.6594612078478107,
+      "agreement_persist_weighted": 0.5783244371414185,
+      "nmi": 0.7671630874865799
+    },
+    "5": {
+      "n_rows": 589,
+      "n_used": 589,
+      "agreement": 0.6716355570440719,
+      "agreement_persist_weighted": 0.5911713242530823,
+      "nmi": 0.7718516242647789
+    },
+    "6": {
+      "n_rows": 568,
+      "n_used": 568,
+      "agreement": 0.6694079475223739,
+      "agreement_persist_weighted": 0.5889592170715332,
+      "nmi": 0.7789465945909465
+    },
+    "7": {
+      "n_rows": 621,
+      "n_used": 621,
+      "agreement": 0.6496917511657944,
+      "agreement_persist_weighted": 0.5691060423851013,
+      "nmi": 0.7753705175212849
+    },
+    "8": {
+      "n_rows": 590,
+      "n_used": 590,
+      "agreement": 0.6465893416754943,
+      "agreement_persist_weighted": 0.5644993185997009,
+      "nmi": 0.7761276158511055
+    },
+    "9": {
+      "n_rows": 595,
+      "n_used": 595,
+      "agreement": 0.6631943988532913,
+      "agreement_persist_weighted": 0.5832489132881165,
+      "nmi": 0.7773327373302563
+    },
+    "10": {
+      "n_rows": 584,
+      "n_used": 584,
+      "agreement": 0.6736695450734874,
+      "agreement_persist_weighted": 0.5916991233825684,
+      "nmi": 0.7717101426332361
+    },
+    "11": {
+      "n_rows": 575,
+      "n_used": 575,
+      "agreement": 0.6733138020833334,
+      "agreement_persist_weighted": 0.5857938528060913,
+      "nmi": 0.7723327064800383
+    },
+    "12": {
+      "n_rows": 528,
+      "n_used": 528,
+      "agreement": 0.6580491499467329,
+      "agreement_persist_weighted": 0.5629162788391113,
+      "nmi": 0.7719469639361506
+    }
+  }
+}

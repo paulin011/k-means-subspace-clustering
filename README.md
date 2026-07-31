@@ -200,6 +200,168 @@ Writes `<dir>/holdout.json`; the next `analyze_clusters.py` run renders a **Held
 generalization** section from it automatically. (v6, d=64: held-out 31.5% vs in-sample
 31.5% — the subspaces generalise.)
 
+### `file_signature.py` — per-file regime signature + residual (for timestamp selection)
+
+Where the other scripts study the *clusters*, this one turns a frozen clustering run into a
+**per-timestep summary of the entire dataset** — the coordinate system for "which timestamps
+to train on" (goal 1 of the WeatherGenerator-training analysis). It replays
+`holdout_eval.py`'s exact frozen-assignment rule (`‖x−μ_j‖² − ‖Uⱼᵀ(x−μ_j)‖²`) on **all
+12,288 cells of every one of the 13,021 files**, but reduces the result *per file* instead of
+per held-out set:
+
+- `mix [K]` — fraction of the file's cells in each cluster (its regime-mix fingerprint; a
+  low-dim snapshot signature, stable because clusters are geographic & time-stable);
+- `mean_residual` — the file's mean orthogonal residual, i.e. the part the regime+subspace
+  model leaves unexplained. Its count-weighted global mean reproduces the model's
+  `final_obj_per_token` — a built-in correctness check (v6: 1887.16 over the held-out files,
+  matching `holdout.json` to 4 sig figs);
+- `residual_frac` = `mean_residual / mean_total` (globally ~31.5% for v6; high outliers = the
+  anomalous / hard-to-encode timestamps — candidates for hard-example upweighting);
+- `rare_exposure` — share of the file's tokens in the globally-rarest clusters (bottom
+  quartile by token share; high = rich in rare regimes — candidates for class-balancing);
+- the reconstructed calendar date (`2014-01-01 + idx×6h`; `idx` == file id, confirmed).
+
+**Streaming, not load-all:** the full dataset is ~656 GB as fp16 > 512 GB RAM, so files are
+loaded in batches (`--batch-files`, ~25 GB each at the default 500), assigned on a single
+GPU, and scattered into `[N_FILES]`-wide accumulators. I/O dominates (~17 files/s ⇒ ~13 min
+to read all 1.3 TB), so one GPU suffices and the broken inter-GPU P2P never enters.
+
+```bash
+# full run over all 13,021 files (~15 min); writes signatures.npz, file_summary.csv,
+# cluster_mix.csv, manifest.json, report.md under --out
+python3 file_signature.py --out file_signatures/v6_d64
+# quick correctness check on 200 files: the printed mean mean_residual must match
+# the model's final_obj_per_token (~1888), and mean residual_frac ~31.5%
+python3 file_signature.py --limit 200 --out file_signatures/_smoke
+```
+
+`cluster_mix.csv` is the feature matrix for the next step — k-center / farthest-point in
+mix-space picks a minimal *covering* subset of timestamps (anti-redundancy: consecutive
+snapshots are near-duplicates in mix), and the `month`/`rare_exposure`/`residual_frac`
+columns drive seasonal / rare-regime / hard-example upweighting. The most principled variant
+re-runs this same script with the model's *forecast errors* as input, so the signature flags
+the regimes where the predictor actually fails.
+
+### `wgen_architecture.md` — upstream WeatherGenerator architecture (for the forecast-error step)
+
+To ground the next step (attributing the model's *forecast* error to these clusters), the
+upstream ECMWF **WeatherGenerator** model was cloned read-only to `/home/psaher/WeatherGenerator`
+and mapped by a 6-reader dynamic workflow (`wgen_architecture.md` in this dir). The findings
+(all HIGH confidence) are what make the forecast-error step cheap:
+
+- The `ForecastingEngine` is **latent→latent 2048-d** — it predicts the next-step *latent*
+  tokens (`engines.py:564-636`, `model.py:703`, comment "roll-out in latent space"). The
+  physical decode is a *separate* branch used only for the loss.
+- Therefore `forecast_engine(latents_2[t])` predicts `latents_2[t+1]`, and **both already
+  exist on disk** — the forecast-error sweep needs only the `forecast_engine` forward, no
+  encoder/decoder/ERA5/Anemoi.
+- `latents_2`'s `latent [1,12288,2048]` **is** the encoder output `tokens_global`
+  (`encoder.py:140`); NESTED ordering is set in the tokenizer layer (`datasets/utils.py`) —
+  the same index order as `assignments.pt`, so per-cell error gathers on with **no remap**.
+- The model is **fully dense (zero MoE)**; the natural MoE slot is the per-block FFN
+  (`layers.py` MLP), with the 16 `ForecastingEngine` blocks the highest-leverage target.
+- Timestep sampling is **uniform random, no weighting** — the goal-1 weighted-sampling hook
+  is `multi_stream_data_sampler.py` `reset()`/`_calc_baseperms` and must be inlined
+  (`IterableDataset` blocks `WeightedRandomSampler`).
+
+The report's §4 is the concrete supercomputer plan, now concretized in the three scripts
+below (`persistence_error.py` → `extract_forecast_error.py` → `analyze_forecast_error.py`):
+produce a `[13020,12288]` per-cell latent residual and gather it directly onto
+`assignments.pt` (both NESTED — no remap). Open question to verify on the supercomputer:
+confirm `latents_2[t]` is the step-0 encoder state feeding `forecast_engine` (decode check)
+rather than a forecast-step latent — `extract_forecast_error.py`'s built-in self-check settles
+this (it aborts if skill vs persistence is ≤ 0).
+
+### `persistence_error.py` — per-cell latent PERSISTENCE baseline (model-free, local)
+
+The **persistence baseline** the WGen repo lacks (wgen_architecture.md decision f): how far
+does "predict t+1 = t" land from truth, per cell — computable on the analysis box *right now*
+with no checkpoint, because the latents are already on disk. It is the skill-score
+denominator for the forecast error and itself measures how *changeable* each cell/timestamp is
+between 6h steps (dynamic/stormy vs quiescent).
+
+- For each source `t` (`0..N-2`), `err_persist[t,cell] = ‖x_t[cell] − x_{t+1}[cell]‖²` →
+  `[N=13020, 12288]` float32, per-cell squared-L2 over the 2048 latent dim.
+- Streams files with a threaded prefetch reader; one file read per transition, all on CPU
+  (~15 min for the full 1.3 TB; no GPU needed — it is a pairwise difference).
+- **Integrity-verified:** recomputing `‖x_t − x_{t+1}‖²` from raw `latents_2` for a scattered
+  12-row sample matches the saved array to 0.00e+00 relative error, and file `idx` keys match
+  `source_idx` positionally — so every downstream number rests on this foundation.
+- Outputs `<out>/{err_persist.npy, meta.json}`. The full run lives in `persistence/v6/`
+  (global mean per-cell 6h error ≈ **3149.6**).
+
+```bash
+python3 persistence_error.py --out persistence/v6            # full run (~15 min)
+python3 persistence_error.py --limit 200 --out persistence/_smoke   # quick check
+```
+
+### `extract_forecast_error.py` — per-cell latent FORECAST error (supercomputer only)
+
+Runs **on the supercomputer**, inside the WeatherGenerator env where the trained checkpoint +
+production Config + dataset live (not on this box — no checkpoint here). For each source `t`,
+`pred = forecast_engine(x_t, step=0, rope_coords)`, `err_forecast[t,cell] = ‖pred − x_{t+1}‖²`
+alongside the persistence baseline — same `[13020,12288]` contract, so `analyze_forecast_error.py`
+consumes either/both. Multi-lead rollout (`t→t+k`) is intentionally not implemented.
+
+- **Built-in self-check** (answers the blocking open question): on the first batch it prints
+  `skill = 1 − mean_forecast/mean_persist`; `skill>0` ⇒ `latents_2[t]` is the correct step-0
+  forecast input and the run proceeds, `skill≤0` ⇒ wrong input/rope_coords/config ⇒ it **ABORTS
+  before the full sweep**. No ERA5 needed. `--selfcheck-only` runs just this.
+- The forecast engine is latent→latent and time-homogeneous (`fstep` unused inside its forward),
+  so feeding `latents_2[t]` straight in *is* the model's own forward path; the only op between
+  encoder output and `forecast_engine` is an identity-when-`num_input_steps=1` input-step sum.
+- Two TODOs marked in-file: `build_dataset()` (construct the production Anemoi dataset as the
+  trainer does) and the Config loader (use WGen's training-time merge).
+
+```bash
+# 1) cheap verify (loads model, one batch, prints skill vs persistence, exits):
+python3 extract_forecast_error.py --config <prod.yml> --run-id <id> --selfcheck-only
+# 2) full sweep (detached):
+setsid nohup python3 extract_forecast_error.py --config <prod.yml> --run-id <id> \
+    --out err_forecast/run0 > err_forecast.log 2>&1 &
+```
+
+### `analyze_forecast_error.py` — attribute forecast/persistence error to clusters + goal-1 weights
+
+The analyzer that turns the per-cell error into the two analysis goals: **(1)** training-
+timestamp weights (which timesteps to emphasize) and **(2)** understanding the embeddings
+(where the forecast actually fails). Two modes:
+
+- **Bridge** (now — only `err_persist.npy` present): persistence = the 6h-tendency baseline and a
+  defensible hardness proxy. Skill/forecast columns masked, awaiting `err_forecast.npy`.
+- **Full** (when `err_forecast.npy` lands beside `err_persist.npy`, auto-detected): latent
+  **skill = 1 − err_fc/err_ps**, computed as a **ratio-of-sums** (`1 − Σfc/Σps`), never a mean
+  of per-cell skill.
+
+**Attribution** uses the static dominant-per-cell map (`mode(label)` per cell over the 7000-file
+sample) as the full-coverage default; a **free** static-vs-dynamic gate replays the per-token
+labels already in `assignments.pt` on the 7000∩err intersection to test "are the clusters
+temporally universal?" Validated v6 result: **NMI 0.76–0.78 every month, none contested** ⇒ the
+static map is trustworthy; per-cell purity mean 0.656 (≈34% per-token mis-attribution),
+zero-cell clusters `[13,98]` flagged for the optional `--dynamic` full pass.
+
+**Goal-1 weights** (`weights.csv`, one row per source transition) fuse three rank-normalized
+percentile axes (hardness, rare-regime, diversity=1/local-density in mix-space) as a weighted
+**mean** — not a product, which saturates the clip — through `1+(Wmax−1)·s^α`, renormalized to
+mean 1. Validated range `w_final ∈ [0.34, 2.45]`, σ 0.41, physically sensible (spring/autumn
+6h-tendencies up-weighted over quiescent winter). Anti-leakage + handoff caveats in the report:
+these are *emitted*; WGen's uniform-random `IterableDataset` sampler would need an inlined
+weighted/stratified variant to apply them.
+
+```bash
+# bridge (now): persistence-only attribution + goal-1 weights
+python3 analyze_forecast_error.py --err-dir persistence/v6 --out forecast_error/persist_v6
+# full (when err_forecast.npy exists in <err-dir>): skill + full attribution + map_skill.png
+python3 analyze_forecast_error.py --err-dir err_forecast/run0 --out forecast_error/full_v6
+```
+
+Outputs (`forecast_error/persist_v6/`): `summary.json`, `per_cluster.csv`, `temporal.csv`
+(hour/month/year, 2022 flagged partial), `weights.csv`, `static_vs_dynamic.json`, `report.md`,
+`maps/{map_persist.png, map_dominant.png}` (+`map_forecast/p95/skill.png` in full mode).
+`map_persist.png` is physically coherent — highest 6h tendency in the tropics + mid-latitude
+storm tracks, lowest at the poles + subtropical deserts/gyres — confirming the latents encode
+meaningful atmospheric structure.
+
 ### Chained run (fire and forget)
 
 ```bash

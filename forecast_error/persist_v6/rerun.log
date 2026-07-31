@@ -1,0 +1,5 @@
+[mode] bridge  N=13020  err_ps mean=3149.59
+[time] hours=[3255, 3255, 3255, 3255]  years={2014: 1460, 2015: 1460, 2016: 1464, 2017: 1460, 2018: 1460, 2019: 1460, 2020: 1464, 2021: 1460, 2022: 1332}  months_distinct=107
+[skill] eps=3.15  masked_frac=0.00e+00  (expect ~0)
+[gate] static-vs-dynamic NMI by month: M1:0.77, M2:0.76, M3:0.76, M4:0.77, M5:0.77, M6:0.78, M7:0.78, M8:0.78, M9:0.78, M10:0.77, M11:0.77, M12:0.77
+[write] forecast_error/persist_v6/{summary.json,per_cluster.csv,temporal.csv,weights.csv,static_vs_dynamic.json,report.md,maps/}

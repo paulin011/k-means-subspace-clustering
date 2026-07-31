@@ -11,3 +11,4 @@ verify_script.*
 
 # large per-run checkpoints/results (exceed GitHub's 100MB file limit)
 *.pt
+*.npy

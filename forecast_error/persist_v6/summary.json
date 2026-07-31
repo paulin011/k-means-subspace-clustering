@@ -1,0 +1,21 @@
+{
+  "mode": "bridge",
+  "N": 13020,
+  "n_cells": 12288,
+  "K": 128,
+  "global_mean_ps": 3149.58935546875,
+  "global_skill": null,
+  "fc_sum": null,
+  "ps_sum": null,
+  "masked_frac": 0.0,
+  "final_obj_per_token": 1887.8253485659247,
+  "per_cell_purity_mean": 0.6555363885788691,
+  "n_pure_cells": 685,
+  "zero_cell_clusters": [
+    13,
+    98
+  ],
+  "contested_months": [],
+  "d80_median": 37,
+  "d80_max": 40
+}
