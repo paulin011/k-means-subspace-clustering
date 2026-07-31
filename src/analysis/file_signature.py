@@ -51,16 +51,17 @@ Outputs (under <out>/):
 
 Usage:
   # smoke-test correctness on the exact 200 held-out files (residual must match holdout.json):
-  python3 src/file_signature.py --files-from runs/clustering/v6_subspace_big_d64/holdout/files.json \
+  python3 src/analysis/file_signature.py --files-from runs/clustering/v6_subspace_big_d64/holdout/files.json \
       --out runs/signatures/_smoke
   # full run over all 13,021 files:
-  python3 src/file_signature.py --out runs/signatures/v6_d64
+  python3 src/analysis/file_signature.py --out runs/signatures/v6_d64
 """
 
 import argparse
 import csv
 import json
 import os
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -68,7 +69,8 @@ from datetime import datetime
 import numpy as np
 import torch
 
-from cluster_io import DIM, N_CELLS, N_FILES_TOTAL, load_file_list
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # src/ -> `common`
+from common.cluster_io import DIM, N_CELLS, N_FILES_TOTAL, load_file_list
 
 START = datetime(2014, 1, 1, 0, 0)          # ERA5 first step (reconstructed, UTC)
 STEP_H = 6                                  # 6-hourly cadence (4/day)

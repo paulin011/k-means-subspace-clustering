@@ -25,18 +25,20 @@ exact same tokens (e.g. vary K or d but hold the data fixed), pass the previous 
 sample with --files-from <dir>/sample.json (or <dir>/model.pt) plus the same --seed and
 --tokens-per-file. Runs sharing a sample fingerprint are directly comparable.
 
-Full run:  nohup python3 src/subspace_kmeans.py > logs/subspace_run.log 2>&1 &
+Full run:  nohup python3 src/clustering/subspace_kmeans.py > logs/subspace_run.log 2>&1 &
 """
 
 import argparse
 import os
+import sys
 import threading
 import time
 
 import torch
 
-from cluster_io import (DIM, N_CELLS, N_FILES_TOTAL, load_tokens,
-                        sample_fingerprint, save_assignments, save_model)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # src/ -> `common`
+from common.cluster_io import (DIM, N_CELLS, N_FILES_TOTAL, load_tokens,
+                               sample_fingerprint, save_assignments, save_model)
 
 
 def parse_args():

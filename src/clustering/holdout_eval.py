@@ -38,18 +38,20 @@ Writes <dir>/holdout.json; `analyze_clusters.py` renders a "Held-out generalizat
 section from it automatically on the next run.
 
 Usage:
-  python3 src/holdout_eval.py --dir runs/clustering/v6_subspace_big_d64 --num-files 200
+  python3 src/clustering/holdout_eval.py --dir runs/clustering/v6_subspace_big_d64 --num-files 200
 """
 
 import argparse
 import json
 import os
+import sys
 import types
 
 import torch
 
-from cluster_io import (DIM, N_CELLS, N_FILES_TOTAL, OVERFIT_GAP_THRESHOLD,
-                        load_tokens)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # src/ -> `common`
+from common.cluster_io import (DIM, N_CELLS, N_FILES_TOTAL,
+                               OVERFIT_GAP_THRESHOLD, load_tokens)
 
 
 def parse_args():

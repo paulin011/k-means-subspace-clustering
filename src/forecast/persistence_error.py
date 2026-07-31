@@ -19,8 +19,8 @@ cluster / timestamp is between 6h steps (dynamic/stormy vs quiescent).
 Reads the LOCAL copy (key `idx`). The supercomputer copy uses key `idx_num`; --key overrides.
 
 USAGE
-  python3 src/persistence_error.py --out runs/persistence/v6            # full run, ~10-20 min
-  python3 src/persistence_error.py --limit 200 --out runs/persistence/_smoke   # quick sanity check
+  python3 src/forecast/persistence_error.py --out runs/persistence/v6            # full run, ~10-20 min
+  python3 src/forecast/persistence_error.py --limit 200 --out runs/persistence/_smoke   # quick sanity check
 
 OUTPUTS  <out>/
   err_persist.npy  [N,12288] float32   (N = n_files-1)

@@ -29,20 +29,23 @@ colors come from `affinity_ordered_colors` (spectral seriation of the subspace-a
 matrix) and are computed **once** and shared across every map so months are comparable.
 
 Usage:
-  python3 src/temporal_spatial.py --dir runs/clustering/v6_subspace_big_d64
+  python3 src/analysis/temporal_spatial.py --dir runs/clustering/v6_subspace_big_d64
 """
 
 import argparse
 import calendar
 import os
+import sys
 import time
 from datetime import datetime, timedelta
 
 import numpy as np
 import torch
 
-from worldmap import (N_CELLS, build_affinity_matrix, affinity_ordered_colors,
-                      render_world_map, render_change_map)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # src/ -> `common`
+from common.worldmap import (N_CELLS, build_affinity_matrix,
+                             affinity_ordered_colors, render_world_map,
+                             render_change_map)
 
 START = datetime(2014, 1, 1, 0, 0)          # ERA5 first step (reconstructed)
 STEP = timedelta(hours=6)                   # 6-hourly cadence (4/day)

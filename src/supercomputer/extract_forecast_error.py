@@ -33,10 +33,10 @@ JOIN TO CLUSTERS
 
 USAGE (supercomputer)
   # 1) cheap verification (loads model, one batch, prints skill vs persistence):
-  python3 src/extract_forecast_error.py --config <prod.yml> --run-id <id> --selfcheck-only \\
+  python3 src/supercomputer/extract_forecast_error.py --config <prod.yml> --run-id <id> --selfcheck-only \\
       --latents-dir /p/scratch/weatherai/slurm/slurm_weathergen_atmosfo2_copy_dir/WeatherGenerator/latents_2
   # 2) full sweep (detached):
-  setsid nohup python3 src/extract_forecast_error.py --config <prod.yml> --run-id <id> \\
+  setsid nohup python3 src/supercomputer/extract_forecast_error.py --config <prod.yml> --run-id <id> \\
       --out err_forecast/run0 > err_forecast.log 2>&1 &
 
 OUTPUTS  <out>/

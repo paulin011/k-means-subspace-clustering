@@ -24,18 +24,20 @@ contested clusters are flagged and zero-cell clusters (13, 98) are reported expl
 ALL experiments/outputs go to one fresh dir; NEVER symlink the .pt/.npy inputs (scratch-clobber rule).
 
 USAGE
-  python3 src/analyze_forecast_error.py --err-dir runs/persistence/v6 --out runs/forecast_error/persist_v6
+  python3 src/analysis/analyze_forecast_error.py --err-dir runs/persistence/v6 --out runs/forecast_error/persist_v6
   # when err_forecast.npy lands in <err-dir> alongside err_persist.npy -> full mode automatically.
 """
 
 import argparse
 import json
 import os
+import sys
 
 import numpy as np
 import torch
 
-import worldmap as wm
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # src/ -> `common`
+from common import worldmap as wm
 
 BASE_DT = np.datetime64("2014-01-01T00:00:00", "ms")
 SIXH_MS = 6 * 3600 * 1000

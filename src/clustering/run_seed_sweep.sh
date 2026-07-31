@@ -18,7 +18,7 @@ PY=/usr/bin/python3
 V6=runs/clustering/v6_subspace_big_d64
 SAMPLE=$V6/sample.json
 GAP=1200                                                       # 20 min between seed runs
-REGEN_PAT="src/subspace_kmeans.py.*--out runs/clustering/v6_subspace_big_d64"
+REGEN_PAT="src/clustering/subspace_kmeans.py.*--out runs/clustering/v6_subspace_big_d64"
 
 log(){ echo "[$(date '+%F %T')] $*" >> "$LOG"; }
 
@@ -49,8 +49,8 @@ fi
 
 # 3. regenerate v6 reports with the fixed code
 log "regenerating v6 reports with fixed code..."
-$PY src/analyze_clusters.py --dir "$V6" --out "$V6/report.md" >>"$LOG" 2>&1 && log "  v6 report.md done"
-$PY src/temporal_spatial.py --dir "$V6"                        >>"$LOG" 2>&1 && log "  v6 temporal_report.md done"
+$PY src/analysis/analyze_clusters.py --dir "$V6" --out "$V6/report.md" >>"$LOG" 2>&1 && log "  v6 report.md done"
+$PY src/analysis/temporal_spatial.py --dir "$V6"                        >>"$LOG" 2>&1 && log "  v6 temporal_report.md done"
 
 # 4. seed runs (v7, v8) -- same sample, different init seed
 N=7
@@ -58,13 +58,13 @@ for SEED in 1 2; do
   OUT="runs/clustering/v${N}_seed${SEED}_d64"
   log "=== seed $SEED -> $OUT (K=128 d=64, --files-from $SAMPLE) ==="
   mkdir -p "$OUT"
-  $PY src/subspace_kmeans.py --files-from "$SAMPLE" --clusters 128 --dim 64 \
+  $PY src/clustering/subspace_kmeans.py --files-from "$SAMPLE" --clusters 128 --dim 64 \
       --seed "$SEED" --tokens-per-file 12288 --max-ram-gb 420 --out "$OUT" >>"$LOG" 2>&1
   rc=$?
   log "  subspace_kmeans seed $SEED exit=$rc"
   if [ $rc -eq 0 ]; then
-    $PY src/analyze_clusters.py --dir "$OUT" --out "$OUT/report.md" >>"$LOG" 2>&1 && log "  seed$SEED report.md done"
-    $PY src/temporal_spatial.py --dir "$OUT"                        >>"$LOG" 2>&1 && log "  seed$SEED temporal_report.md done"
+    $PY src/analysis/analyze_clusters.py --dir "$OUT" --out "$OUT/report.md" >>"$LOG" 2>&1 && log "  seed$SEED report.md done"
+    $PY src/analysis/temporal_spatial.py --dir "$OUT"                        >>"$LOG" 2>&1 && log "  seed$SEED temporal_report.md done"
   else
     log "  seed $SEED FAILED -- skipping its reports."
   fi

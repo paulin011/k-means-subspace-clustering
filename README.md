@@ -21,7 +21,13 @@ parses coastlines with stdlib `json`).
 ## Layout
 
 ```
-src/      all scripts (flat) + run_seed_sweep.sh
+src/              scripts, grouped by role:
+  common/           cluster_io.py, worldmap.py   — shared by every other directory
+  clustering/       subspace_kmeans.py, holdout_eval.py, run_seed_sweep.sh
+  analysis/         analyze_clusters.py, temporal_spatial.py, file_signature.py,
+                    analyze_forecast_error.py   — everything that reads a finished run
+  forecast/         persistence_error.py        — per-cell error extraction (runs here)
+  supercomputer/    extract_forecast_error.py   — runs only where the WGen checkpoint lives
 docs/     METRICS.md, wgen_architecture.md, INTERPRETATION_i100.md, ideas/
 runs/     clustering/  signatures/  persistence/  forecast_error/   (all generated results)
 logs/     run logs
@@ -30,18 +36,35 @@ latents_2/            the 1.2 TB dataset (gitignored)
 latents_downscaled/, JL-Downscaling/   legacy, see below
 ```
 
-> **Run every script from the repository root** — `python3 src/subspace_kmeans.py`, never
-> `cd src`. Each script's data-path defaults (`latents_2`, `runs/…`, `assets/…`) are
-> root-relative, so a different working directory breaks them. Python puts the invoked
-> script's own directory on `sys.path`, which is why `src/` is flat and the cross-imports
-> (`cluster_io`, `worldmap`) resolve without any package machinery.
+The split is by *role*, and the boundaries are meaningful: `common/` is the only
+directory anything else imports; `clustering/` produces `model.pt`/`assignments.pt`;
+`analysis/` only ever consumes them; `forecast/` writes the `[13020, 12288]` per-cell
+error arrays; `supercomputer/` is quarantined because it imports `weathergen` and
+therefore **cannot run on this box** (`ModuleNotFoundError` is the expected outcome here).
+
+> **Run every script from the repository root** — `python3 src/clustering/subspace_kmeans.py`,
+> never `cd src/clustering`. Each script's data-path defaults (`latents_2`, `runs/…`,
+> `assets/…`) are root-relative, so a different working directory breaks them.
+>
+> Python only puts the invoked script's *own* directory on `sys.path`, so every script that
+> needs `cluster_io`/`worldmap` adds `src/` itself, right above the import:
+>
+> ```python
+> sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+> from common.cluster_io import load_tokens
+> ```
+>
+> That two-line bootstrap (not a package install, not `PYTHONPATH`) is what keeps plain
+> `python3 src/<role>/<script>.py` working. Copy it into any new script that imports from
+> `common/`; scripts with no cross-import (`persistence_error.py`,
+> `extract_forecast_error.py`) don't need it.
 
 `README.md` and `CLAUDE.md` stay at the repository root by design: GitHub renders the former
 as the landing page, and Claude Code only auto-loads the latter from the root.
 
 ## Scripts
 
-### `cluster_io.py` — shared sampling/IO for all clustering algorithms
+### `src/common/cluster_io.py` — shared sampling/IO for all clustering algorithms
 
 Every clustering script (`subspace_kmeans.py`, and any k-means / k-center scripts) is
 expected to import this module rather than reimplement sampling or output, so that runs
@@ -73,7 +96,7 @@ basis. `subspace_kmeans.py --dim 0` exercises this path directly.
 `assignments.pt` contract (all algorithms): `file_id` / `cell_id` / `label` (int32) for
 every sampled token.
 
-### `subspace_kmeans.py` — K-subspaces clustering
+### `src/clustering/subspace_kmeans.py` — K-subspaces clustering
 
 K-means generalized to affine subspaces: each cluster is a mean μⱼ plus an orthonormal
 basis `Uⱼ [2048, d]`, and each token is assigned to the cluster with the smallest
@@ -106,11 +129,11 @@ the int32 `file_id`/`cell_id` arrays (~8 bytes/token) plus transient float32 dec
 
 ```bash
 # defaults: 1500 files (~75 GB RAM), K=64, d=16, ≤25 iterations  — ~7 min wall time
-nohup python3 src/subspace_kmeans.py --out runs/clustering/v1_subspace_out \
+nohup python3 src/clustering/subspace_kmeans.py --out runs/clustering/v1_subspace_out \
     > runs/clustering/v1_subspace_out/run.log 2>&1 &
 
 # large run: 7000 files (~352 GB RAM), K=128, d=32  — ~1-1.5 h wall time
-nohup python3 src/subspace_kmeans.py --num-files 7000 --clusters 128 --dim 32 \
+nohup python3 src/clustering/subspace_kmeans.py --num-files 7000 --clusters 128 --dim 32 \
     --iters 40 --max-ram-gb 420 --out runs/clustering/v2_subspace_big \
     > runs/clustering/v2_subspace_big/run.log 2>&1 &
 ```
@@ -121,7 +144,7 @@ nohup python3 src/subspace_kmeans.py --num-files 7000 --clusters 128 --dim 32 \
 the only fair way to compare, e.g. K or `d` or iteration count — reuse that sample:
 
 ```bash
-python3 src/subspace_kmeans.py --files-from runs/clustering/v2_subspace_big/sample.json \
+python3 src/clustering/subspace_kmeans.py --files-from runs/clustering/v2_subspace_big/sample.json \
     --clusters 128 --dim 32 --iters 100 --out runs/clustering/v3_subspace_big_i100
 ```
 
@@ -143,7 +166,7 @@ shared contract above:
 
 Project a token onto its cluster subspace with `(x - means[j]) @ U[j]`.
 
-### `analyze_clusters.py` — Markdown report generator
+### `src/analysis/analyze_clusters.py` — Markdown report generator
 
 Algorithm-agnostic: reads any `model.pt`/`assignments.pt` following the `cluster_io.py`
 schema, from `subspace_kmeans.py` or from k-means/k-center (the `d=0` point-cluster
@@ -155,7 +178,7 @@ HEALPix cells, temporal coverage and variation, plus EVR/effective-dimensionalit
 only — mean squared principal-angle cosines, flags merge candidates).
 
 ```bash
-python3 src/analyze_clusters.py --dir runs/clustering/v1_subspace_out \
+python3 src/analysis/analyze_clusters.py --dir runs/clustering/v1_subspace_out \
     --out runs/clustering/v1_subspace_out/report.md
 ```
 
@@ -169,7 +192,7 @@ The **world map and the temporal/seasonal analysis live in a separate report** �
 spatial/temporal columns and a pointer to `temporal_report.md`. Every metric in
 `report.md` is defined and interpreted in **[METRICS.md](docs/METRICS.md)**.
 
-### `worldmap.py` — shared HEALPix geometry, cluster coloring, and map renderer
+### `src/common/worldmap.py` — shared HEALPix geometry, cluster coloring, and map renderer
 
 Imported by both `analyze_clusters.py` and `temporal_spatial.py`, so the two reports
 share one geometry, one cluster-color assignment, and one map renderer:
@@ -196,7 +219,7 @@ share one geometry, one cluster-color assignment, and one map renderer:
   flip are colored by the transition, and the function returns the legend of the dominant
   source→destination pairs so the report can name them.
 
-### `temporal_spatial.py` — temporal & spatial report
+### `src/analysis/temporal_spatial.py` — temporal & spatial report
 
 Dedicated report (`temporal_report.md`) for the spatial and temporal structure at calendar
 (monthly) resolution:
@@ -215,7 +238,7 @@ Dedicated report (`temporal_report.md`) for the spatial and temporal structure a
   cluster each flipped cell moves *to*, with the top transitions named in a table.
 
 ```bash
-python3 src/temporal_spatial.py --dir runs/clustering/v6_subspace_big_d64
+python3 src/analysis/temporal_spatial.py --dir runs/clustering/v6_subspace_big_d64
 ```
 
 It reconstructs each file's calendar month from `datetime = 2014-01-01 00:00 + idx×6h` and
@@ -224,7 +247,7 @@ calendar month, ~528–623 files/month) — so there is **no recomputation**: it
 rendering/reporting pass. For a run that under-samples some month, re-cluster with more
 `--num-files` and re-run.
 
-### `holdout_eval.py` — generalization check on unseen files
+### `src/clustering/holdout_eval.py` — generalization check on unseen files
 
 The variance decomposition in the report is measured on the tokens the model was *fit*
 on. With `d`-dim per-cluster bases the model has many free parameters (K·2048·d), so an
@@ -235,14 +258,14 @@ held-out residual fraction next to the in-sample one. A small gap ⇒ the subspa
 reusable structure; a large positive gap ⇒ overfitting (lower `--dim` or add tokens).
 
 ```bash
-python3 src/holdout_eval.py --dir runs/clustering/v6_subspace_big_d64 --num-files 200
+python3 src/clustering/holdout_eval.py --dir runs/clustering/v6_subspace_big_d64 --num-files 200
 ```
 
 Writes `<dir>/holdout.json`; the next `analyze_clusters.py` run renders a **Held-out
 generalization** section from it automatically. (v6, d=64: held-out 31.5% vs in-sample
 31.5% — the subspaces generalise.)
 
-### `file_signature.py` — per-file regime signature + residual (for timestamp selection)
+### `src/analysis/file_signature.py` — per-file regime signature + residual (for timestamp selection)
 
 Where the other scripts study the *clusters*, this one turns a frozen clustering run into a
 **per-timestep summary of the entire dataset** — the coordinate system for "which timestamps
@@ -271,10 +294,10 @@ to read all 1.3 TB), so one GPU suffices and the broken inter-GPU P2P never ente
 ```bash
 # full run over all 13,021 files (~15 min); writes signatures.npz, file_summary.csv,
 # cluster_mix.csv, manifest.json, report.md under --out
-python3 src/file_signature.py --out runs/signatures/v6_d64
+python3 src/analysis/file_signature.py --out runs/signatures/v6_d64
 # quick correctness check on 200 files: the printed mean mean_residual must match
 # the model's final_obj_per_token (~1888), and mean residual_frac ~31.5%
-python3 src/file_signature.py --limit 200 --out runs/signatures/_smoke
+python3 src/analysis/file_signature.py --limit 200 --out runs/signatures/_smoke
 ```
 
 `cluster_mix.csv` is the feature matrix for the next step — k-center / farthest-point in
@@ -314,7 +337,7 @@ confirm `latents_2[t]` is the step-0 encoder state feeding `forecast_engine` (de
 rather than a forecast-step latent — `extract_forecast_error.py`'s built-in self-check settles
 this (it aborts if skill vs persistence is ≤ 0).
 
-### `persistence_error.py` — per-cell latent PERSISTENCE baseline (model-free, local)
+### `src/forecast/persistence_error.py` — per-cell latent PERSISTENCE baseline (model-free, local)
 
 The **persistence baseline** the WGen repo lacks (`docs/wgen_architecture.md` decision f): how far
 does "predict t+1 = t" land from truth, per cell — computable on the analysis box *right now*
@@ -333,11 +356,11 @@ between 6h steps (dynamic/stormy vs quiescent).
   (global mean per-cell 6h error ≈ **3149.6**).
 
 ```bash
-python3 src/persistence_error.py --out runs/persistence/v6            # full run (~15 min)
-python3 src/persistence_error.py --limit 200 --out runs/persistence/_smoke   # quick check
+python3 src/forecast/persistence_error.py --out runs/persistence/v6            # full run (~15 min)
+python3 src/forecast/persistence_error.py --limit 200 --out runs/persistence/_smoke   # quick check
 ```
 
-### `extract_forecast_error.py` — per-cell latent FORECAST error (supercomputer only)
+### `src/supercomputer/extract_forecast_error.py` — per-cell latent FORECAST error (supercomputer only)
 
 Runs **on the supercomputer**, inside the WeatherGenerator env where the trained checkpoint +
 production Config + dataset live (not on this box — no checkpoint here). For each source `t`,
@@ -357,13 +380,13 @@ consumes either/both. Multi-lead rollout (`t→t+k`) is intentionally not implem
 
 ```bash
 # 1) cheap verify (loads model, one batch, prints skill vs persistence, exits):
-python3 src/extract_forecast_error.py --config <prod.yml> --run-id <id> --selfcheck-only
+python3 src/supercomputer/extract_forecast_error.py --config <prod.yml> --run-id <id> --selfcheck-only
 # 2) full sweep (detached):
-setsid nohup python3 src/extract_forecast_error.py --config <prod.yml> --run-id <id> \
+setsid nohup python3 src/supercomputer/extract_forecast_error.py --config <prod.yml> --run-id <id> \
     --out err_forecast/run0 > err_forecast.log 2>&1 &
 ```
 
-### `analyze_forecast_error.py` — attribute forecast/persistence error to clusters + goal-1 weights
+### `src/analysis/analyze_forecast_error.py` — attribute forecast/persistence error to clusters + goal-1 weights
 
 The analyzer that turns the per-cell error into the two analysis goals: **(1)** training-
 timestamp weights (which timesteps to emphasize) and **(2)** understanding the embeddings
@@ -392,9 +415,9 @@ weighted/stratified variant to apply them.
 
 ```bash
 # bridge (now): persistence-only attribution + goal-1 weights
-python3 src/analyze_forecast_error.py --err-dir runs/persistence/v6 --out runs/forecast_error/persist_v6
+python3 src/analysis/analyze_forecast_error.py --err-dir runs/persistence/v6 --out runs/forecast_error/persist_v6
 # full (when err_forecast.npy exists in <err-dir>): skill + full attribution + map_skill.png
-python3 src/analyze_forecast_error.py --err-dir err_forecast/run0 --out forecast_error/full_v6
+python3 src/analysis/analyze_forecast_error.py --err-dir err_forecast/run0 --out forecast_error/full_v6
 ```
 
 Outputs (`runs/forecast_error/persist_v6/`): `summary.json`, `per_cluster.csv`, `temporal.csv`
@@ -408,9 +431,9 @@ meaningful atmospheric structure.
 
 ```bash
 out=runs/clustering/v2_subspace_big; mkdir -p "$out"
-nohup bash -c "python3 src/subspace_kmeans.py --num-files 7000 --clusters 128 --dim 32 \
+nohup bash -c "python3 src/clustering/subspace_kmeans.py --num-files 7000 --clusters 128 --dim 32 \
   --iters 40 --max-ram-gb 420 --out $out && \
-  python3 src/analyze_clusters.py --dir $out --out $out/report.md" \
+  python3 src/analysis/analyze_clusters.py --dir $out --out $out/report.md" \
   > $out/run.log 2>&1 &
 ```
 
@@ -488,7 +511,7 @@ chronological order (v1 → v8 below).
   102 in v8. On the spatial partition itself (label-invariant), the three runs agree with
   **normalized mutual information 0.72** between every pair (vs 0.13 for a random shuffle;
   adjusted Rand index 0.36 vs ≈0.0). **Verdict: the d=64/K=128 result is seed-stable; v6 is
-  the final configuration.** Driver: `src/run_seed_sweep.sh` (detached `setsid nohup`).
+  the final configuration.** Driver: `src/clustering/run_seed_sweep.sh` (detached `setsid nohup`).
 - The **temporal & spatial report** (`temporal_spatial.py` → `temporal_report.md`) breaks
   v6 down by calendar month: clusters 24/82/73/104 peak in NH summer, 7/29/67 in winter;
   month-to-month dominant-cluster flips range 6.2% (Jul→Aug) to 21.5% (Apr→May), and
