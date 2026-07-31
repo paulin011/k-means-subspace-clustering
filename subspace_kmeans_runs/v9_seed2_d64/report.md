@@ -1,6 +1,6 @@
 # Clustering report (subspace_kmeans) — `/home/psaher/latents/subspace_kmeans_runs/v8_seed2_d64`
 
-*Generated 2026-06-28 14:46 by `analyze_clusters.py`. K=128 affine subspaces of dim 64 in 2048-dim token space, 86,016,000 tokens.*
+*Generated 2026-06-29 19:20 by `analyze_clusters.py`. K=128 affine subspaces of dim 64 in 2048-dim token space, 86,016,000 tokens.*
 
 ## Overview
 
@@ -50,7 +50,7 @@ The core quantities, defined once here:
 
 ## Convergence
 
-*How to read this: one row per training iteration, from `model['history']`. **objective/token** is the quantity the algorithm minimises — the total reconstruction error divided by the token count, i.e. the average per-token residual the subspaces leave unexplained (for d=0 just the mean squared distance to the nearest centroid); it should fall monotonically and flatten.**labels changed** is the fraction of tokens that switched cluster this iteration. **min/max size** are the smallest and largest cluster token counts that iteration; a min that recovers from a tiny value shows the re-seed guard rescuing a collapsing cluster.*
+*How to read this: one row per training iteration, from `model['history']`. **objective/token** is the quantity the algorithm minimises — the total reconstruction error divided by the token count, i.e. the average per-token residual the subspaces leave unexplained (for d=0 just the mean squared distance to the nearest centroid); it should fall monotonically and flatten. **labels changed** is the fraction of tokens that switched cluster this iteration. **min/max size** are the smallest and largest cluster token counts that iteration; a min that recovers from a tiny value shows the re-seed guard rescuing a collapsing cluster.*
 
 | iter | objective/token | labels changed | min size | max size |
 |---|---|---|---|---|
@@ -82,21 +82,25 @@ The core quantities, defined once here:
 
 ## Global variance decomposition
 
-*How to read this: this splits the total spread of the tokens into the parts the model explains and the part it doesn't. Writing μ_global for the population-weighted mean of all centroids, the **total variance** is `E‖x − μ_global‖² = between + within`, where:*
+*How to read this: the **law of total variance** lets us cut the single, uninterpretable total spread of the tokens into perpendicular pieces that each audit a different part of the model. Writing μ_global for the population-weighted mean of all centroids, the **total variance** splits as:*
+
+*`E‖x − μ_global‖² = between + within`*  *(centroids vs. inside clusters), and `within` splits again into `captured + residual` (along the subspaces vs. off them). The pieces are perpendicular, so their squared lengths add to the whole.*
 
 - *`between = Σⱼ wⱼ ‖μⱼ − μ_global‖²` — spread of the cluster centroids (from `means`, `counts`).*
 - *`within  = Σⱼ wⱼ · trace[j]` — average spread of tokens around their own centroid (from `trace`, `counts`).*
 - *`captured = Σⱼ wⱼ · Σ eigvals[j]` — the slice of `within` that the subspaces reconstruct (from `eigvals`); `residual = within − captured` is what's left over.*
 
-*Read the three percentages as: how much of all variation is explained by which cluster a token is in, how much by where it sits inside its cluster's subspace, and how much the model misses.*
+*The point of the split is to read the total as a **budget**: how much variation is explained by **which** cluster a token is in, how much by **where it sits inside** its cluster's subspace, and how much the model **misses**. The model's objective is to minimise that last piece (residual).*
 
 Total token variance E‖x−μ_global‖² = **6000**, split into:
 
-- **8.5%** between clusters (the means alone — how much cluster identity explains)
-- **60.1%** captured within clusters by the top-64 subspace directions
-- **31.5%** residual (unexplained by the model)
+- **8.5%** is `between / total`. It is variance explained purely by **which** cluster a token is in, before looking at anything inside the cluster.
+- **60.1%** is `captured / total`. It is the chunk of `within` that the top-64 subspace directions reconstruct, expressed as a fraction of the grand total. Note it is **not** `captured / within`; it is divided by 6000, the same denominator as the other two, which is what lets all three add to 100%.
+- **31.5%** is `residual / total`, the leftover within-cluster variance no subspace direction reaches. This is exactly what the assignment rule minimises.
 
-Count-weighted within-cluster EVR(top-64): **0.664** — the population-weighted average of the per-cluster EVR defined in the cluster table below (fraction of a cluster's own variance its subspace captures). Dimensions needed for 80% of captured variance: min 26 / median 37 / max 40 (this is the **d80** column below: the smallest number of leading PC directions whose eigenvalues sum to 80% of the kept total; it is capped at d+1=65, meaning a cluster reaching that value never hits 80% even using all 64 kept directions — its spectrum is flat and 64 dimensions still truncate it).
+**Count-weighted within-cluster EVR(top-64): 0.664** — population-weighted average of the per-cluster EVR in the table below: of a cluster's *own* internal variance, its 64 subspace directions recover about 66%. (This is `captured / within`; the **captured** line above was `captured / total`, hence larger here.)
+
+**Dimensions for 80% of within-cluster variance: min 26 / median 37 / max 40** — the **d80** column below. A PC direction is one of PCA's perpendicular axes of variation inside a cluster (columns of `U`, most-spread first); d80 counts how many reach 80% of the kept total. Capped at d+1=65 = a truncation warning. Your max is 40, below the cap → no cluster truncated, d=64 has headroom.
 
 ## Clusters (sorted by size)
 

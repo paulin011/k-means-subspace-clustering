@@ -3,6 +3,7 @@ __pycache__/
 JL-Downscaling/
 latents_2/
 latents_downscaled/
+.venv/*
 
 # legacy run logs (see CLAUDE.md "Legacy — ignore")
 nohup.out
