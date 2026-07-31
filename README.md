@@ -12,6 +12,12 @@ calendar date is reconstructed positionally as `datetime = 2014-01-01 00:00 UTC 
 range would run to 2022-12-31 18:00, ~127 more steps, so the last ~month of 2022 is not
 fully covered). `temporal_spatial.py` groups files into calendar months this way.
 
+**Dependencies:** `requirements.txt` (`numpy`, `torch`, `matplotlib`, `scipy`). On this
+machine they are already present system-wide under `/usr/bin/python3` — there is no venv and
+nothing to install; the file exists so the scripts can be run elsewhere. The scripts
+deliberately avoid `healpy`/`cartopy`/`shapely` (`worldmap.py` reimplements the geometry and
+parses coastlines with stdlib `json`).
+
 ## Scripts
 
 ### `cluster_io.py` — shared sampling/IO for all clustering algorithms
@@ -132,6 +138,11 @@ python3 analyze_clusters.py --dir subspace_kmeans_runs/v1_subspace_out \
     --out subspace_kmeans_runs/v1_subspace_out/report.md
 ```
 
+The report opens with an **Overview** that defines the core quantities once (μⱼ, Uⱼ, the
+orthogonal residual, `eigvals`, `trace`, `counts`), and each table is preceded by a *"How to
+read this"* note naming the `model.pt` fields it comes from — so `report.md` is readable
+standalone, without the reader having to hold the algorithm in their head.
+
 The **world map and the temporal/seasonal analysis live in a separate report** — see
 `temporal_spatial.py` below; `analyze_clusters.py` keeps the compact per-cluster
 spatial/temporal columns and a pointer to `temporal_report.md`. Every metric in
@@ -159,6 +170,10 @@ share one geometry, one cluster-color assignment, and one map renderer:
   painted with `pcolormesh`) that replaces the old speckled 12,288-pixel scatter with a
   continuous, coast-aligned field. Interpolating RGB (not the categorical cluster id) is
   valid precisely because `affinity_ordered_colors` already makes neighbors similar. ~0.8 s/map.
+- `render_change_map()` — a Mollweide map of *where the dominant cluster differs* between
+  two periods (e.g. Jan vs Jul). Cells that keep their label are drawn muted; cells that
+  flip are colored by the transition, and the function returns the legend of the dominant
+  source→destination pairs so the report can name them.
 
 ### `temporal_spatial.py` — temporal & spatial report
 
@@ -167,10 +182,16 @@ Dedicated report (`temporal_report.md`) for the spatial and temporal structure a
 
 - an **annual** dominant-cluster world map + **12 monthly** maps (continent outlines +
   smooth heatmap via `worldmap.py`), all on one shared color scale so months are comparable;
+- **4 seasonal maps** (DJF/MAM/JJA/SON, Northern-Hemisphere convention — DJF spans the year
+  boundary, so December is grouped with the *following* Jan/Feb) plus a season-to-season
+  stability row, the coarser and less noisy companion to the monthly view;
 - a **monthly enrichment** table flagging the most seasonal clusters (1.0 = year-round,
   ≫1 = concentrated in those months);
 - a **month-to-month stability** curve — the share of cells whose dominant cluster flips
-  between consecutive months — plus a Jan↔Jul (winter vs summer) shift.
+  between consecutive months, including the Dec→Jan wrap;
+- **Jan → Jul change maps** (`map_change_jan_jul.png`, `map_change_jul_dest.png`) via
+  `worldmap.render_change_map` — where the winter/summer dominant cluster flips, and which
+  cluster each flipped cell moves *to*, with the top transitions named in a table.
 
 ```bash
 python3 temporal_spatial.py --dir subspace_kmeans_runs/v6_subspace_big_d64
@@ -421,6 +442,11 @@ chronological order (v1 → v8 below).
   init seeds 1 and 2 on the *same* file sample (only `--seed` changes), to confirm d=64/K=128
   is a stable optimum basin rather than a lucky init. Their convergence history is in
   `report.md`; the full per-run logs are in `seed_sweep.log` (repo root), not a per-dir `run.log`.
+- `v9_seed2_d64/` — **not a new clustering run**: the v8 model re-reported with the upgraded
+  `analyze_clusters.py` + `temporal_spatial.py` (reader's guide, seasonal maps, Jan→Jul change
+  maps). It therefore holds only `report.md`, `temporal_report.md`, `sample.json` and `maps/` —
+  the `model.pt`/`assignments.pt` it describes live in `v8_seed2_d64/`, and both reports carry
+  that directory in their header. Numbers are v8's; only the presentation is new.
 - **Seed robustness (the final check).** Across v6 (seed 0), v7 (seed 1), v8 (seed 2):
 
   | metric | seed 0 (v6) | seed 1 (v7) | seed 2 (v8) |
