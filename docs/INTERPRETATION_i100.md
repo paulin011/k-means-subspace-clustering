@@ -29,7 +29,7 @@ label — which cluster (0…127) it was assigned to.
 This is what lets the report tie clusters to geography (via cell_id) and time (via file_id, since file index ≈ time step).
 
 sample.json — the manifest
-{fingerprint, num_files: 7000, tokens_per_file: 12288, seed: 0, src, files: [...7000 ids...]}. Its only job is reproducibility: --files-from subspace_kmeans_runs/v3_subspace_big_i100/sample.json re-clusters the identical token set under a different K or d for a fair comparison.
+{fingerprint, num_files: 7000, tokens_per_file: 12288, seed: 0, src, files: [...7000 ids...]}. Its only job is reproducibility: --files-from runs/clustering/v3_subspace_big_i100/sample.json re-clusters the identical token set under a different K or d for a fair comparison.
 
 Reading the report section by section
 Header & Configuration
