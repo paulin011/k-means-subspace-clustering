@@ -1,6 +1,6 @@
 # Clustering report (subspace_kmeans) — `runs/clustering/v7_seed1_d64`
 
-*Generated 2026-07-31 18:08 by `analyze_clusters.py`. K=128 affine subspaces of dim 64 in 2048-dim token space, 86,016,000 tokens.*
+*Generated 2026-08-04 13:43 by `analyze_clusters.py`. K=128 affine subspaces of dim 64 in 2048-dim token space, 86,016,000 tokens.*
 
 ## Overview
 

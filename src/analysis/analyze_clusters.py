@@ -13,6 +13,10 @@ d=0 "point cluster" case -- no subspace basis, just a centroid). Reports:
     distance that k-means/subspace_kmeans optimize)
   - subspace affinity between clusters (d>0 only): mean squared cosine of principal
     angles -- high-affinity pairs indicate clusters that could be merged
+  - per-cluster assignment margin (`margin` / `near%` columns), when a
+    `cluster_margin.csv` from file_signature.py is available for this run (auto-detected,
+    or --margins). Everything else in this report is derived from the saved model and the
+    sampled assignments; the margin needs a data pass, hence the separate producer.
 
 The **world map and the temporal/seasonal analysis live in the dedicated temporal &
 spatial report** (`temporal_spatial.py` -> `temporal_report.md`): 12 monthly
@@ -26,6 +30,8 @@ Usage:
 """
 
 import argparse
+import csv
+import glob
 import hashlib
 import json
 import os
@@ -43,11 +49,64 @@ N_CELLS = 12288
 N_FILES_TOTAL = 13021
 
 
+def load_margins(run_dir, explicit, K):
+    """Optional per-cluster assignment margin, produced by `file_signature.py`.
+
+    `maxAff` (computed here from the bases alone) measures the *geometric* angle between
+    two subspaces; it cannot tell whether they actually contest the same tokens. The
+    margin does, but it needs a data pass, so it is computed by file_signature.py over
+    the full dataset and merged in here when available. The two correlate strongly
+    (v6: Pearson +0.77) without being redundant -- see docs/METRICS.md.
+
+    Resolution order: --margins, then <run_dir>/cluster_margin.csv, then any
+    runs/signatures/*/ whose manifest names this run as its frozen model.
+    """
+    path = explicit
+    if path is None:
+        cand = os.path.join(run_dir, "cluster_margin.csv")
+        if os.path.exists(cand):
+            path = cand
+    if path is None:
+        for mf in sorted(glob.glob(os.path.join("runs", "signatures", "*", "manifest.json"))):
+            try:
+                with open(mf) as f:
+                    man = json.load(f)
+            except (OSError, ValueError):
+                continue
+            if os.path.abspath(man.get("model_dir", "")) != os.path.abspath(run_dir):
+                continue
+            cand = os.path.join(os.path.dirname(mf), "cluster_margin.csv")
+            if os.path.exists(cand):
+                path = cand
+                break
+    if path is None or not os.path.exists(path):
+        return None
+    out = {"path": path, "margin": np.full(K, np.nan), "near": np.full(K, np.nan),
+           "runner": np.full(K, -1, dtype=int), "runner_frac": np.full(K, np.nan)}
+    try:
+        with open(path) as f:
+            for r in csv.DictReader(f):
+                k = int(r["cluster"])
+                if not 0 <= k < K:
+                    continue
+                out["margin"][k] = float(r["margin_mean"])
+                out["near"][k] = float(r["near_frac"])
+                out["runner"][k] = int(r["runner_up"])
+                out["runner_frac"][k] = float(r["runner_up_frac"])
+    except (OSError, ValueError, KeyError):
+        return None
+    return None if np.isnan(out["margin"]).all() else out
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--dir", default="runs/clustering/v6_subspace_big_d64", help="directory with model.pt + assignments.pt")
     ap.add_argument("--out", default=None, help="output Markdown file (default: <dir>/report.md)")
     ap.add_argument("--top-pairs", type=int, default=12, help="most similar cluster pairs to list")
+    ap.add_argument("--margins", default=None,
+                    help="cluster_margin.csv from file_signature.py, adding the per-cluster "
+                         "assignment-margin columns (default: auto-detect a runs/signatures/* "
+                         "run whose manifest names this --dir as its frozen model)")
     args = ap.parse_args()
     out_path = args.out or os.path.join(args.dir, "report.md")
 
@@ -319,6 +378,8 @@ def main():
     aff_off.fill_diagonal_(-1.0)
     max_aff = aff_off.max(1).values
 
+    mg = load_margins(args.dir, args.margins, K)
+
     add("\n## Clusters (sorted by size)\n")
     add("*How to read this: one row per cluster, largest first. Each column is computed "
         "from `assignments.pt` (the per-token `label` / `cell_id` / `file_id`) and "
@@ -352,6 +413,18 @@ def main():
     add("- *`tCV` = coefficient of variation (std / mean) of the cluster's token share across "
         "the 10 time deciles. **0 = perfectly constant over time; high ⇒ seasonal or trending.** "
         "Computed over populated deciles only, so a sparse sample can't fake a signal.*")
+    if mg is not None:
+        add("- *`margin` = mean relative assignment margin `(R₂−R₁)/R₁` over the tokens this "
+            "cluster owns — how much worse the **second-best** subspace is. `near%` = share of "
+            "those tokens with margin < 10% (**near-ties**: assigned to this cluster, but "
+            "barely). **This is the subspace-native separation metric**; the usual silhouette "
+            "coefficient does not apply here because it assumes Euclidean distance to a "
+            "centroid and spherical clusters. It **correlates strongly with `maxAff`** "
+            "(v6: Pearson +0.77) but is not redundant with it: `maxAff` sees only the angle "
+            "between two subspaces, blind to where their means sit and where the data is "
+            "dense, so it explains only ~59% of `near%`'s variance and names a different "
+            "closest rival for half the clusters. "
+            f"Measured over the full dataset by `file_signature.py` (`{mg['path']}`).*")
     if radius is not None:
         add("- *`radius` = k-center's native objective: the max distance from the centroid to "
             "any member (a worst-case, not an average like `trace`).*")
@@ -365,6 +438,8 @@ def main():
     cols += ["cells@50%", "owned", "files@50%", "tCV"]
     if d > 0:
         cols += ["maxAff"]
+    if mg is not None:
+        cols += ["margin", "near%"]
     if radius is not None:
         cols += ["radius"]
     add("| " + " | ".join(cols) + " |")
@@ -378,6 +453,9 @@ def main():
                 ("–" if tcv != tcv else f"{tcv:.3f}")]
         if d > 0:
             row += [f"{float(max_aff[j]):.3f}"]
+        if mg is not None:
+            row += [("–" if np.isnan(mg["margin"][j]) else f"{mg['margin'][j]:.3f}"),
+                    ("–" if np.isnan(mg["near"][j]) else f"{mg['near'][j]:.1%}")]
         if radius is not None:
             row += [f"{float(radius[j]):.2f}"]
         add("| " + " | ".join(row) + " |")
@@ -401,9 +479,29 @@ def main():
     if dup:
         flags.append(f"`maxAff > 0.9` (near-duplicate of another cluster ⇒ K may be too "
                      f"large): **{', '.join(map(str, dup))}**")
+    # Listed worst-first and truncated: unlike the other flags this one can match dozens of
+    # clusters (the global near-tie rate is ~31%), and a 40-name list is not actionable.
+    contested = ([] if mg is None else
+                 [j for j in np.argsort(np.nan_to_num(mg["near"]))[::-1].tolist()
+                  if not np.isnan(mg["near"][j]) and mg["near"][j] > 0.5])
+    if contested:
+        shown = ", ".join(f"{j} ({mg['near'][j]:.0%})" for j in contested[:10])
+        more = f", … {len(contested) - 10} more" if len(contested) > 10 else ""
+        flags.append(f"`near% > 50` (most of the cluster's own tokens are near-ties with a "
+                     f"rival subspace ⇒ it is a slice of a continuum, not a separated mode) — "
+                     f"{len(contested)} of {K}, worst first: **{shown}**{more}.")
     add(" ".join(flags) if flags else
         "None — every cluster owns at least one cell, none is degenerately small, and no "
         "pair of subspaces is near-identical.")
+    if mg is not None:
+        nz = mg["near"][~np.isnan(mg["near"])]
+        worst = int(np.nanargmax(mg["near"]))
+        add(f"\nSeparation summary: mean `near%` **{nz.mean():.1%}** across clusters "
+            f"(range {nz.min():.1%}–{nz.max():.1%}); least-separated cluster **{worst}** "
+            f"({mg['near'][worst]:.1%} near-ties, closest rival **{int(mg['runner'][worst])}** "
+            f"taking {mg['runner_frac'][worst]:.1%} of its runner-up mass). A high global "
+            "near-tie rate is not a defect of the fit — it is evidence the token manifold is a "
+            "continuum, which is exactly what the soft/MPPCA assignment (`--soft`) is for.")
 
     # ---- Temporal & spatial analysis (pointer) ------------------------------
     ts_report = os.path.join(args.dir, "temporal_report.md")

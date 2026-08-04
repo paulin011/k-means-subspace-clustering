@@ -126,6 +126,40 @@ One row per cluster:
 - **tCV** — temporal coefficient of variation: std/mean of the cluster's enrichment across
   the 10 time deciles. **0 ⇒ constant rate over time; high ⇒ concentrated in certain
   periods** (seasonal/trend signature).
+- **margin** / **near%** (only when a `cluster_margin.csv` from `file_signature.py` is
+  available — auto-detected, or passed with `--margins`) — the **assignment margin**, the
+  subspace-native separation metric. Every token is ranked against all K subspaces during
+  assignment, so the runner-up costs nothing extra: with `R₁ ≤ R₂` the two smallest
+  residuals of token *x*,
+
+      margin(x) = (R₂(x) − R₁(x)) / R₁(x)
+
+  is dimensionless — "how much worse is the second-best subspace". `margin` is its mean
+  over the tokens the cluster *owns*; `near%` is the share of those tokens with
+  `margin < 10%` (**near-ties**: assigned to this cluster, but barely).
+  *Why not silhouette:* the standard multi-metric cluster-evaluation recommendation is the
+  silhouette coefficient, which does **not** transfer here — it assumes Euclidean distance
+  to a centroid and roughly spherical clusters, the wrong geometry for subspaces. The
+  margin is built from the exact residual the algorithm minimizes, so it is the correct
+  analogue.
+  *Relation to `maxAff`:* `maxAff` is a purely geometric angle between two bases and never
+  touches the data; `near%` measures whether two clusters actually contest the same tokens.
+  Measured on v6 the two **correlate strongly** — Pearson +0.77, Spearman +0.78 — which is
+  the expected direction: subspaces that overlap in orientation do tend to fight over the
+  same tokens. `near%` is nonetheless not redundant, for three concrete reasons:
+  - **41% of its variance is unexplained** by `maxAff` (R² = 0.59).
+  - Its **dynamic range is far wider**: 0.9%…70.1% against `maxAff`'s 0.526…0.805, so it
+    separates crisp modes from contested ones much more sharply.
+  - It names a **different closest rival for 52% of clusters** (geometry's nearest
+    neighbour equals the data's runner-up for only 62/128).
+
+  The reason they can diverge is that `maxAff` sees *orientation only* — it is blind to
+  where the two means sit and where the data is actually dense. Two near-parallel but
+  distant flats score high affinity while never contesting a token (v6 c123: `maxAff` 0.697,
+  `near%` 1.3%), and a more moderately aligned pair sitting inside dense data contests
+  heavily (c122: `maxAff` 0.668, `near%` 45.7%). Because it needs a full data pass, `near%`
+  is produced by `file_signature.py` (which already computes the whole `[b, K]` residual
+  matrix) rather than by the report itself.
 - **radius** (k-center only, when `model.pt["radius"]` is present) — the *max* distance
   from centroid to any member, k-center's native minimax objective. Contrast with `trace`
   (mean squared distance, what k-means/subspace_kmeans minimize). A large radius relative
@@ -140,6 +174,12 @@ One row per cluster:
 - **size < ¼ of the mean cluster size** — degenerately small; the re-seed guard should
   normally prevent this, so it appearing means the guard is being outrun.
 - `maxAff > 0.9` — near-duplicate of another cluster ⇒ K is probably too large.
+- `near% > 50` (only with `--margins`) — most of the cluster's own tokens are near-ties
+  with a rival subspace, so the cluster is a slice of a continuum rather than a separated
+  mode. Listed worst-first and truncated to 10, since dozens of clusters can match (the
+  global near-tie rate is ~31%) and a 40-name list is not actionable. A high *global*
+  near-tie rate is not a defect of the fit — it is the measurement that motivates the
+  soft/MPPCA assignment (`subspace_kmeans.py --soft`).
 
 How the spatial/temporal stats are built:
 

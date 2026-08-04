@@ -25,6 +25,39 @@ system the "which timestamps to train on" question (goal 1) is built on:
   * `rare_exposure`  scalar -- share of the file's tokens in the globally-rarest clusters
                               (bottom quartile by token share). High => the snapshot is
                               rich in rare regimes -- candidates for class-balancing.
+  * `mean_margin` / `near_frac`  scalar -- assignment *confidence* (see below), reduced
+                              per file: the mean relative margin of the file's tokens and
+                              the share of them that are near-ties.
+
+ASSIGNMENT MARGIN (the subspace-native separation metric). The kernel below already
+ranks every token against all K subspaces, so the runner-up is free -- taking topk(2)
+instead of min() costs nothing measurable and yields
+
+    margin(x) = (R_2nd(x) - R_1st(x)) / R_1st(x)      (relative, dimensionless)
+
+i.e. "how much worse is the second-best subspace". This is the correct analogue of the
+silhouette coefficient for K-subspaces: silhouette assumes Euclidean distance to a
+centroid and spherical clusters, which is the wrong geometry here, whereas the margin is
+built from the exact quantity the algorithm minimises. Reduced two ways:
+
+  * per CLUSTER -- `cluster_margin_mean[K]`, `cluster_near_frac[K]` (share of the
+    cluster's own tokens with margin < 10%), and the runner-up confusion matrix
+    `cluster_runner_up[K,K]` -> each cluster's single closest competitor and how much
+    of its mass that one competitor contests. A cluster with a high near-tie fraction
+    is not well separated *as a region of the data*.
+    Relation to `maxAff` (the purely geometric subspace-vs-subspace angle computed in
+    analyze_clusters.py without touching data): the two correlate strongly on v6 --
+    Pearson +0.77, Spearman +0.78 -- which is expected, since subspaces that overlap in
+    orientation do tend to fight over the same tokens. `near_frac` is nonetheless not
+    redundant: 41% of its variance is unexplained by maxAff, its dynamic range is far
+    wider (0.9%..70.1% vs 0.53..0.81), and it names a *different* closest rival for 52%
+    of clusters. maxAff compares only subspace ORIENTATION -- it is blind to where the
+    means sit and how the data is distributed -- so two parallel-but-distant flats score
+    high affinity while never contesting a token (v6 c123: maxAff 0.697, near 1.3%), and
+    a moderately-aligned pair sitting in dense data contests heavily (c122: maxAff 0.668,
+    near 45.7%).
+  * per CELL -- `margin_map.npy`, so ambiguity is localisable on the globe exactly like
+    `residual_map.npy` localises the residual.
 
 The math is identical to `holdout_eval.py` (same frozen-assignment kernel); the only
 difference is the reduction axis: holdout averages over a held-out *set* to test
@@ -46,15 +79,27 @@ Outputs (under <out>/):
                      gather onto each other directly. Skip with --no-cell-maps.
   label_map.npy      [N, 12288] int16 -- assigned cluster per cell (the full-dataset
                      dynamic label map; assignments.pt only covers the sampled files).
+  margin_map.npy     [N, 12288] float16 -- per-cell relative assignment margin, clipped
+                     to [0, MARGIN_CLIP]. Low = this cell is contested between two
+                     subspaces at this timestep.
   signatures.npz     canonical: mix[N,K], mean_residual/total/within/captured[N],
                      residual_frac[N], dominant[N], rare_exposure[N], n_tokens[N],
+                     mean_margin[N], near_frac[N],
                      cell_mean_residual[12288], cell_std_residual[12288] (the per-cell
                      climatology that makes residual_map comparable across cells),
+                     cell_mean_margin[12288],
+                     cluster_margin_mean[K], cluster_near_frac[K], cluster_tokens[K],
+                     cluster_runner_up[K], cluster_runner_up_frac[K],
+                     cluster_runner_up_matrix[K,K],
                      file_idx[N], datetime_hour[N] (numpy datetime64[h]).
   file_summary.csv   one row per file: id, idx, date, y/m/d/h, dom_cluster, dom_frac,
-                     rare_exposure, mean_residual, residual_frac, mean_total.
+                     rare_exposure, mean_residual, residual_frac, mean_total,
+                     mean_margin, near_frac.
   cluster_mix.csv    wide form: file_id, c000..c{K-1} (the mix matrix; load into pandas
                      / sklearn for k-center / diversity timestamp selection).
+  cluster_margin.csv one row per cluster: tokens, share, margin_mean, near_frac,
+                     runner_up, runner_up_frac -- the per-cluster separation table
+                     analyze_clusters.py merges into its report via --margins.
   manifest.json      provenance (model path, K, d, fingerprint, src, START, formulas).
   report.md          self-describing headline findings + how to use for goal 1.
 
@@ -83,6 +128,13 @@ from common.cluster_io import DIM, N_CELLS, N_FILES_TOTAL, load_file_list
 
 START = datetime(2014, 1, 1, 0, 0)          # ERA5 first step (reconstructed, UTC)
 STEP_H = 6                                  # 6-hourly cadence (4/day)
+
+NEAR_TIE = 0.10      # margin below this => the token is a "near-tie" between two subspaces.
+                     # 10% matches the threshold the earlier ambiguity measurement used
+                     # (~31% of tokens near-tied), so the per-cluster numbers here
+                     # decompose that single global figure by cluster.
+MARGIN_EPS = 1e-6    # guard for the division by R_1st (residuals are ~1e3, so inert)
+MARGIN_CLIP = 10.0   # margin_map is float16; a margin of 10 already means "unambiguous"
 
 
 def parse_args():
@@ -185,7 +237,19 @@ def main():
     within_sum = torch.zeros(W, dtype=torch.float64, device=device)
     cap_sum = torch.zeros(W, dtype=torch.float64, device=device)
     total_sum = torch.zeros(W, dtype=torch.float64, device=device)
+    margin_sum = torch.zeros(W, dtype=torch.float64, device=device)
+    near_sum = torch.zeros(W, dtype=torch.float64, device=device)
     stored_idx = np.full(W, -1, dtype=np.int64)
+
+    # ---- per-CLUSTER margin accumulators (tiny: K and K*K scalars) -------------
+    # Indexed by the *assigned* cluster, so cluster j's row describes the tokens j
+    # actually owns. `clu_runner` is the [K,K] runner-up confusion matrix: entry
+    # (j, k) counts tokens assigned to j whose second-best subspace was k.
+    do_margin = K >= 2
+    clu_tokens = torch.zeros(K, dtype=torch.float64, device=device)
+    clu_margin_sum = torch.zeros(K, dtype=torch.float64, device=device)
+    clu_near_sum = torch.zeros(K, dtype=torch.float64, device=device)
+    clu_runner = torch.zeros(K * K, dtype=torch.float64, device=device)
 
     # ---- per-CELL outlier maps (the per-token residual, kept instead of reduced) --
     # The assignment kernel below already computes a residual for every one of the
@@ -210,6 +274,12 @@ def main():
         buf_lab = torch.empty(args.batch_files * N_CELLS, dtype=torch.int16, device=device)
         cell_sum = torch.zeros(N_CELLS, dtype=torch.float64, device=device)
         cell_sqsum = torch.zeros(N_CELLS, dtype=torch.float64, device=device)
+        if do_margin:
+            margin_map = np.lib.format.open_memmap(
+                os.path.join(args.out, "margin_map.npy"), mode="w+",
+                dtype=np.float16, shape=(N, N_CELLS))
+            buf_mrg = torch.empty(args.batch_files * N_CELLS, dtype=torch.float32, device=device)
+            cell_mrg_sum = torch.zeros(N_CELLS, dtype=torch.float64, device=device)
         print(f"  writing per-cell maps: residual_map.npy [{N},{N_CELLS}] float32 "
               f"({N * N_CELLS * 4 / 2**30:.2f} GiB) + label_map.npy int16", flush=True)
 
@@ -236,7 +306,24 @@ def main():
                 dist2 = xnorm - 2 * (X @ means.to(device).T) + (means.to(device) ** 2).sum(1)
                 proj = pe
             R = dist2 - proj                                       # [b,K]  residual to each subspace
-            vals, a = R.min(1)                                     # assign by min residual
+            if do_margin:
+                # the runner-up is free: R is already the full [b,K] ranking, so topk(2)
+                # replaces min(1) at no measurable cost and gives the separation metric.
+                r2v, r2i = torch.topk(R, 2, dim=1, largest=False)
+                vals, a = r2v[:, 0], r2i[:, 0]
+                runner = r2i[:, 1]
+                mrg = (r2v[:, 1] - vals) / vals.clamp_min(MARGIN_EPS)   # relative margin
+                mrg = mrg.clamp_min(0)
+                near = (mrg < NEAR_TIE).double()
+                onesK = torch.ones(a.shape[0], device=device, dtype=torch.float64)
+                clu_tokens.index_add_(0, a, onesK)
+                clu_margin_sum.index_add_(0, a, mrg.double())
+                clu_near_sum.index_add_(0, a, near)
+                clu_runner.index_add_(0, a * K + runner, onesK)
+                margin_sum.index_add_(0, fc, mrg.double())
+                near_sum.index_add_(0, fc, near)
+            else:
+                vals, a = R.min(1)                                 # assign by min residual
             if cell_maps:
                 # keep the per-token result before it is reduced away; c0 indexes the
                 # batch's token array, which is laid out file-major then cell-ordered
@@ -244,6 +331,8 @@ def main():
                 # a [len(batch), 12288] view is exactly [file, HEALPix cell].
                 buf_resid[c0:c0 + X.shape[0]] = vals.clamp_min(0).float()
                 buf_lab[c0:c0 + X.shape[0]] = a.to(torch.int16)
+                if do_margin:
+                    buf_mrg[c0:c0 + X.shape[0]] = mrg.clamp_max(MARGIN_CLIP).float()
             ad = dist2.gather(1, a.unsqueeze(1)).squeeze(1)       # within (= dist to assigned mu)
             ap = proj.gather(1, a.unsqueeze(1)).squeeze(1)        # captured by assigned subspace
             tot = ((X - mu_g) ** 2).sum(1)                        # total to frozen global mean
@@ -260,6 +349,10 @@ def main():
             cell_sqsum += (rm.double() ** 2).sum(0)
             resid_map[i0:i0 + nbf] = rm.cpu().numpy()
             label_map[i0:i0 + nbf] = buf_lab[:M].view(nbf, N_CELLS).cpu().numpy()
+            if do_margin:
+                mg = buf_mrg[:M].view(nbf, N_CELLS)
+                cell_mrg_sum += mg.sum(0).double()
+                margin_map[i0:i0 + nbf] = mg.cpu().numpy().astype(np.float16)
         del data, fid
         el = time.time() - t_start
         done = i0 + len(batch)
@@ -278,8 +371,20 @@ def main():
     resid_frac = mean_resid / np.clip(mean_total, 1e-12, None)
     dominant = mix.argmax(1)
     dom_frac = mix.max(1)
+    mean_margin = (margin_sum[sel] / n_tok.clamp(min=1)).cpu().numpy()
+    near_frac = (near_sum[sel] / n_tok.clamp(min=1)).cpu().numpy()
     n_tok = n_tok.cpu().numpy()
     idx_arr = stored_idx[sel.cpu().numpy()]
+
+    # ---- per-cluster separation (assignment margin) ---------------------------
+    ct = clu_tokens.cpu().numpy()
+    ct_safe = np.maximum(ct, 1.0)
+    clu_margin = (clu_margin_sum.cpu().numpy() / ct_safe)
+    clu_near = (clu_near_sum.cpu().numpy() / ct_safe)
+    conf = clu_runner.view(K, K).cpu().numpy()                    # [K,K] runner-up counts
+    runner_up = conf.argmax(1).astype(np.int32)
+    runner_up_frac = conf.max(1) / ct_safe
+    global_near = float(clu_near_sum.sum().item() / max(ct.sum(), 1.0))
 
     # rare-regime exposure: share of a file's tokens in the globally-rarest
     # clusters (bottom quartile by token share).
@@ -314,6 +419,10 @@ def main():
                                    0.0, None))
         cell_extra = {"cell_mean_residual": cell_mean.astype(np.float32),
                       "cell_std_residual": cell_std.astype(np.float32)}
+        if do_margin:
+            margin_map.flush()
+            cell_extra["cell_mean_margin"] = (cell_mrg_sum / max(N, 1)).cpu().numpy(
+                ).astype(np.float32)
     np.savez(os.path.join(args.out, "signatures.npz"), **cell_extra,
              mix=mix.astype(np.float32), mean_residual=mean_resid.astype(np.float32),
              mean_total=mean_total.astype(np.float32), mean_within=mean_within.astype(np.float32),
@@ -322,20 +431,39 @@ def main():
              rare_exposure=rare_exposure.astype(np.float32), n_tokens=n_tok.astype(np.int32),
              file_idx=idx_arr.astype(np.int32), datetime_hour=dt_h,
              rare_clusters=np.where(rare_mask)[0].astype(np.int32),
-             global_freq=gfreq.astype(np.float32))
+             global_freq=gfreq.astype(np.float32),
+             mean_margin=mean_margin.astype(np.float32), near_frac=near_frac.astype(np.float32),
+             cluster_margin_mean=clu_margin.astype(np.float32),
+             cluster_near_frac=clu_near.astype(np.float32),
+             cluster_tokens=ct.astype(np.int64),
+             cluster_runner_up=runner_up,
+             cluster_runner_up_frac=runner_up_frac.astype(np.float32),
+             cluster_runner_up_matrix=conf.astype(np.int64))
 
     file_ids = np.asarray(files)
     with open(os.path.join(args.out, "file_summary.csv"), "w", newline="") as f:
         wr = csv.writer(f)
         wr.writerow(["file_id", "idx", "datetime_utc", "year", "month", "day", "hour_utc",
                      "dom_cluster", "dom_frac", "rare_exposure",
-                     "mean_residual", "residual_frac", "mean_total"])
+                     "mean_residual", "residual_frac", "mean_total",
+                     "mean_margin", "near_frac"])
         for i in range(N):
             wr.writerow([int(file_ids[i]), int(idx_arr[i]), str(dt_h[i]),
                          int(years[i]), int(months[i]), int(days[i]), int(hours[i]),
                          int(dominant[i]), f"{dom_frac[i]:.4f}", f"{rare_exposure[i]:.4f}",
                          f"{mean_resid[i]:.2f}", f"{resid_frac[i]:.4f}",
-                         f"{mean_total[i]:.2f}"])
+                         f"{mean_total[i]:.2f}",
+                         f"{mean_margin[i]:.4f}", f"{near_frac[i]:.4f}"])
+
+    # per-cluster separation table -- the file analyze_clusters.py --margins reads
+    with open(os.path.join(args.out, "cluster_margin.csv"), "w", newline="") as f:
+        wr = csv.writer(f)
+        wr.writerow(["cluster", "tokens", "share", "margin_mean", "near_frac",
+                     "runner_up", "runner_up_frac"])
+        for k in range(K):
+            wr.writerow([k, int(ct[k]), f"{ct[k] / max(ct.sum(), 1):.6f}",
+                         f"{clu_margin[k]:.4f}", f"{clu_near[k]:.4f}",
+                         int(runner_up[k]), f"{runner_up_frac[k]:.4f}"])
 
     np.savetxt(os.path.join(args.out, "cluster_mix.csv"),
                np.column_stack([file_ids, mix]), delimiter=",",
@@ -358,7 +486,18 @@ def main():
             "mean_residual": "mean over the file's 12288 tokens of residual_(assigned)(x)",
             "residual_frac": "mean_residual / mean_total  (total = E||x-mu_global||^2, "
                              "mu_global frozen from the trained cluster means)",
-            "mix_k": "fraction of the file's 12288 cells assigned to cluster k"},
+            "mix_k": "fraction of the file's 12288 cells assigned to cluster k",
+            "margin(x)": "(R_2nd(x) - R_1st(x)) / R_1st(x)  -- relative assignment margin, "
+                         "the subspace-native separation metric (silhouette's analogue for "
+                         "K-subspaces; silhouette itself assumes Euclidean/spherical clusters)",
+            "near_tie": "margin < %.2f" % NEAR_TIE,
+            "cluster_near_frac[j]": "share of the tokens ASSIGNED to j that are near-ties",
+            "cluster_runner_up[j]": "argmax_k of the [K,K] runner-up confusion matrix row j "
+                                    "= j's single closest competitor for its own tokens"},
+        "margin": {"near_tie_threshold": NEAR_TIE,
+                   "global_near_tie_frac": global_near,
+                   "margin_map.npy": (f"[{N}, {N_CELLS}] float16 -- per-cell margin, clipped "
+                                      f"to {MARGIN_CLIP}" if (cell_maps and do_margin) else None)},
         "cell_maps": ({
             "residual_map.npy": f"[{N}, {N_CELLS}] float32 -- residual_(assigned)(x) for "
                                 "every HEALPix cell of every file (NESTED ordering); row i "
@@ -467,6 +606,54 @@ def main():
             "to separate *anomalous because rapidly changing* (high persistence error) from "
             "*anomalous because unmodelled* (high residual, low persistence error).\n")
 
+    if do_margin:
+        order = np.argsort(clu_near)[::-1]
+        add("\n## Assignment margin (per-cluster separation)\n")
+        add("*How to read this: every token is ranked against all K subspaces, so the "
+            "**runner-up is free**. `margin = (R₂−R₁)/R₁` asks how much worse the "
+            "second-best subspace is; a token with `margin < "
+            f"{NEAR_TIE:.0%}` is a **near-tie** — the partition assigns it, but barely. "
+            "This is the K-subspaces analogue of the silhouette coefficient, which does "
+            "not transfer here because it assumes Euclidean distance to a centroid and "
+            "spherical clusters — the wrong geometry for subspaces.*\n")
+        add(f"- **{global_near:.1%}** of all {int(ct.sum()):,} tokens are near-ties "
+            f"(margin < {NEAR_TIE:.0%}); median per-token margin per cluster ranges "
+            f"**{clu_margin.min():.2f} … {clu_margin.max():.2f}**.")
+        add("- This decomposes that single global ambiguity figure **by cluster**: it is not "
+            "spread evenly, so the worst rows below are the ones where hard labels actually "
+            "throw information away (and where the soft/MPPCA responsibilities matter most).")
+        add("- `maxAff` in the run report measures the *geometric* angle between two subspaces "
+            "without touching data; `near_frac` measures whether they actually **contest the "
+            "same tokens**. The two **correlate strongly** (v6: Pearson +0.77) — overlapping "
+            "orientation does tend to mean contested tokens — but `near_frac` still adds "
+            "information: 41% of its variance is unexplained by `maxAff`, its range is far "
+            "wider, and it names a different closest rival for 52% of clusters. `maxAff` sees "
+            "only orientation, not where the means sit or where the data is dense.\n")
+        add("Least-separated clusters (highest near-tie share of their own tokens):\n")
+        add("| rank | cluster | tokens | share | margin_mean | near_frac | runner-up | runner-up share |")
+        add("|---|---|---|---|---|---|---|---|")
+        for r, k in enumerate(order[:15], 1):
+            add(f"| {r} | {int(k)} | {int(ct[k]):,} | {ct[k] / max(ct.sum(), 1):.2%} | "
+                f"{clu_margin[k]:.3f} | {clu_near[k]:.1%} | {int(runner_up[k])} | "
+                f"{runner_up_frac[k]:.1%} |")
+        add("\nBest-separated clusters (lowest near-tie share):\n")
+        add("| rank | cluster | tokens | share | margin_mean | near_frac | runner-up | runner-up share |")
+        add("|---|---|---|---|---|---|---|---|")
+        for r, k in enumerate(order[::-1][:5], 1):
+            add(f"| {r} | {int(k)} | {int(ct[k]):,} | {ct[k] / max(ct.sum(), 1):.2%} | "
+                f"{clu_margin[k]:.3f} | {clu_near[k]:.1%} | {int(runner_up[k])} | "
+                f"{runner_up_frac[k]:.1%} |")
+        add(f"\nPer-file: `mean_margin` **{mean_margin.mean():.3f}** "
+            f"(p1 {np.quantile(mean_margin, .01):.3f} / p99 {np.quantile(mean_margin, .99):.3f}), "
+            f"`near_frac` **{near_frac.mean():.1%}** "
+            f"(min {near_frac.min():.1%} / max {near_frac.max():.1%}) — a timestep whose cells "
+            "are unusually contested is one the partition describes poorly, an independent "
+            "hardness axis alongside `residual_frac` "
+            f"(corr = {np.corrcoef(near_frac, resid_frac)[0, 1]:+.2f}).")
+        add(f"\nFull table: `cluster_margin.csv` (all {K} clusters). Merge it into the run "
+            "report with `analyze_clusters.py --margins "
+            f"{os.path.join(args.out, 'cluster_margin.csv')}`.\n")
+
     add("\n## How to use for goal 1 (timestamp selection)\n")
     add("- **Diversity / coverage sampling** (anti-redundancy): `cluster_mix.csv` is the feature "
         "matrix; run k-center / farthest-point in mix-space to pick a minimal covering subset — "
@@ -483,10 +670,15 @@ def main():
     add("- `file_summary.csv` — one row per file (human-readable, sorted by file_id).")
     add("- `cluster_mix.csv` — wide mix matrix for pandas / sklearn timestamp selection.")
     add("- `manifest.json` — provenance, formulas, rare-cluster list.")
+    if do_margin:
+        add("- `cluster_margin.csv` — per-cluster separation (margin / near-tie / runner-up).")
     if cell_maps:
         add(f"- `residual_map.npy` — `[{N}, {N_CELLS}]` float32 per-cell residual "
             f"({N * N_CELLS * 4 / 2**30:.2f} GiB; load with `mmap_mode='r'`).")
         add(f"- `label_map.npy` — `[{N}, {N_CELLS}]` int16 per-cell assigned cluster.")
+        if do_margin:
+            add(f"- `margin_map.npy` — `[{N}, {N_CELLS}]` float16 per-cell assignment margin "
+                f"({N * N_CELLS * 2 / 2**30:.2f} GiB; low = contested cell).")
     with open(os.path.join(args.out, "report.md"), "w") as f:
         f.write("\n".join(L))
 
@@ -497,6 +689,12 @@ def main():
     print(f"  mean residual_frac        : {gmean_rf:.1%}  (report in/held-out 31.5%)")
     print(f"  residual_frac range       : {resid_frac.min():.1%} .. {resid_frac.max():.1%}")
     print(f"  rare clusters (bottom ¼)  : {int(rare_mask.sum())} of {K}")
+    if do_margin:
+        wk = int(np.argsort(clu_near)[::-1][0])
+        print(f"  near-tie tokens (margin<{NEAR_TIE:.0%}): {global_near:.1%} "
+              f"(earlier independent estimate ~31%)")
+        print(f"  least-separated cluster   : {wk}  near_frac={clu_near[wk]:.1%}  "
+              f"runner-up={int(runner_up[wk])} ({runner_up_frac[wk]:.1%})")
     ta = int(top_anom[0])
     print(f"  most anomalous file       : {int(file_ids[ta])}  dt={dt_h[ta]}  resid_frac={resid_frac[ta]:.1%}")
     print(f"  wall time                 : {(time.time() - t_start) / 60:.1f} min")

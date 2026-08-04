@@ -62,6 +62,27 @@ therefore **cannot run on this box** (`ModuleNotFoundError` is the expected outc
 `README.md` and `CLAUDE.md` stay at the repository root by design: GitHub renders the former
 as the landing page, and Claude Code only auto-loads the latter from the root.
 
+## Documentation
+
+- **`docs/PIPELINE.md`** — how the scripts chain together: what produces what, why each
+  stage exists, and the cross-stage invariants. Start here if you want the architecture
+  rather than a single script.
+- **`docs/KERNEL.md`** — the matmul trick behind the assignment kernel (the **E-step**),
+  explained from first principles. Read it if `subspace_kmeans.py:148-166` looks like plain
+  k-means to you (it is the exact orthogonal residual to each subspace; the resemblance is
+  the point of confusion the file clears up).
+- **`docs/PCA.md`** — the companion: the **update step**, from the ground up. Opens with a
+  worked-numbers primer (why the anchor is the average, the 3-4-5 triangle showing "capture
+  most" and "leave least" are one goal, what an eigenvalue *is*), then covers why the top-d
+  eigenvectors are provably optimal rather than a heuristic, why the moments are streamed,
+  and why the loop converges (to a *local* minimum — hence the seed sweep). **§8b answers
+  "is this really optimising subspaces, or just k-means with extra steps?"** with a
+  measurement: the two assignment rules agree on only **43%** of tokens and the centre-only
+  proxy leaves **20.1%** more residual.
+- **`docs/METRICS.md`** — definition and interpretation of every number in `report.md`.
+- **`docs/wgen_architecture.md`** — the upstream WeatherGenerator model, for the
+  forecast-error work.
+
 ## Scripts
 
 ### `src/common/cluster_io.py` — shared sampling/IO for all clustering algorithms
@@ -128,9 +149,19 @@ the residual to drop.
   score is so sharply peaked that responsibilities collapse to one-hot — measured mean
   top-1 weight **0.993**, i.e. a slower hard k-subspaces. The likelihood treats all 2048
   dimensions as independent evidence while the data has only ~121 effective dimensions, so
-  **T ≈ 2048/121 ≈ 17** removes that overcounting (deterministic-annealing EM). Smoke test
-  at T=17: mean top-1 **0.877**, 37.2% of tokens below 0.9 confidence — closely matching the
-  independently measured 31% near-tie fraction — for a 0.1% likelihood cost.
+  **T ≈ 2048/121 ≈ 17** removes that overcounting (deterministic-annealing EM).
+  **Its empirical validation was retracted on 2026-08-04.** An early smoke test reported
+  mean top-1 0.877 with 37.2% below 0.9 and claimed a match with the independently measured
+  ~31% near-tie fraction. The production run (v10, 7000 files × 25 iterations) measures
+  **mean top-1 0.950, 15.1% below 0.9, 0.9% below 0.5** — much more peaked. The smoke test
+  ran 300 files for 3 iterations with dozens of re-seeded clusters, so its tokens really
+  were ambiguous; and the two numbers never measured the same thing anyway (the margin uses
+  only the residual, while the likelihood also uses within-subspace position, `σ²`, the
+  log-det volume term and the mixing weights — strictly more information, so legitimately
+  more decisive). T=17 still follows from the effective-dimension argument, which is a
+  property of the data rather than of that run, but treat it as an **unvalidated prior**.
+  Matching the measured ~33% ambiguity would need T ≈ 30–40; testable cheaply by rescoring
+  the saved v10 model at several T **without refitting**.
 - Outputs are **purely additive**: `model.pt` gains `sigma2`/`mixing`/`soft_counts`,
   `assignments.pt` gains `resp_idx [T,m]` int16 + `resp_w [T,m]` float16. `label` remains
   the argmax and `counts` the integer bincount of it, so every existing reader
@@ -254,6 +285,16 @@ miss in a 128-row table: `owned == 0` (never any cell's majority ⇒ not a spati
 size under ¼ of the mean, and `maxAff > 0.9` (near-duplicate ⇒ K too large). Validation
 that it works: run without being told, it independently rediscovers the known stranded
 clusters — v4's singleton (65) and v5's two (8, 65).
+
+**Assignment margin (`--margins`, optional).** Every other column here is derived from the
+saved model and the sampled assignments, so it is free; the one genuinely missing metric —
+*how separated is each cluster in the data*, not just in subspace geometry — needs a data
+pass. `file_signature.py` computes it over the whole dataset (see below) and writes
+`cluster_margin.csv`; this report merges it in as the **`margin`** / **`near%`** columns and a
+`near% > 50` health flag. Auto-detected from any `runs/signatures/*/` whose manifest names
+this run as its frozen model, or point at it explicitly with `--margins <csv>`. Note this is
+*not* the silhouette coefficient, which assumes Euclidean distance to a centroid and spherical
+clusters and so does not apply to subspace clusters; see `docs/METRICS.md`.
 
 ### `src/common/worldmap.py` — shared HEALPix geometry, cluster coloring, and map renderer
 
@@ -381,14 +422,60 @@ so they gather onto each other with no remapping — intersecting them separates
 because rapidly changing* (high persistence error) from *anomalous because unmodelled* (high
 residual, low persistence error). Pass `--no-cell-maps` to skip writing them.
 
+**Assignment margin (`cluster_margin.csv` / `margin_map.npy`) — the per-cluster separation
+metric.** The kernel ranks every token against all K subspaces, so the *runner-up* is free:
+`topk(2)` replaces `min(1)` at no measurable cost and yields
+
+```
+margin(x) = (R₂(x) − R₁(x)) / R₁(x)        # dimensionless: how much worse the 2nd-best subspace is
+```
+
+A token with `margin < 10%` is a **near-tie** — assigned, but barely. This is the
+subspace-native analogue of the silhouette coefficient, which does *not* transfer here (it
+assumes Euclidean distance to a centroid and spherical clusters — the wrong geometry); the
+margin is built from the exact residual the algorithm minimizes. It is reduced three ways:
+
+- **per cluster** → `cluster_margin.csv`: `margin_mean`, `near_frac` (share of the cluster's
+  own tokens that are near-ties), and `runner_up` / `runner_up_frac` from the `[K,K]`
+  runner-up confusion matrix — each cluster's single closest competitor and how much of its
+  contested mass that one rival takes. This decomposes the previously-known *global* ~31%
+  near-tie figure **by cluster**, showing where hard labels actually discard information.
+  `analyze_clusters.py` merges it into the per-cluster table as the `margin` / `near%`
+  columns plus a `near% > 50` health flag (auto-detected from `runs/signatures/*/`, or
+  `--margins <csv>`).
+- **per file** → `mean_margin` / `near_frac` columns in `file_summary.csv`: a timestep whose
+  cells are unusually contested is one the partition describes poorly — a hardness axis
+  independent of `residual_frac`.
+- **per cell** → `margin_map.npy` `[N, 12288]` float16 (0.30 GiB, clipped at 10), so ambiguity
+  is localisable on the globe exactly as `residual_map.npy` localises the residual.
+
+**Relation to `maxAff`.** `maxAff` is a purely geometric angle between two bases that never
+touches the data; `near%` measures whether two clusters actually contest the same tokens. On
+v6 they **correlate strongly** (Pearson +0.77, Spearman +0.78) — the expected direction, since
+overlapping orientation does tend to mean contested tokens. `near%` still adds information
+though: 41% of its variance is unexplained by `maxAff`, its range is far wider (0.9%…70.1% vs
+0.526…0.805), and it names a different closest rival for 52% of clusters. They diverge because
+`maxAff` sees orientation only, blind to where the means sit and where the data is dense — v6
+c123 has `maxAff` 0.697 but just 1.3% near-ties, while c122 has a *lower* `maxAff` 0.668 and
+45.7%. A high global near-tie rate is not a defect of the fit; it is the measurement that
+motivates the soft/MPPCA assignment (`subspace_kmeans.py --soft`).
+
+Measured on v6 (`runs/signatures/v6_d64_margin/`): **33.4%** of all tokens are near-ties,
+reproducing the ~31% estimated earlier by an independent route, and `near_frac` takes 118/128
+distinct values with correlation +0.04 against cluster size. The global figure hides a wide
+spread — c21/c66/c27 sit near 1% (crisp modes) while c106/c45 sit near 70% and are each
+other's runner-up (one continuum cut in half); 29 of 128 clusters have most of their own
+tokens near-tied.
+
 **Streaming, not load-all:** the full dataset is ~656 GB as fp16 > 512 GB RAM, so files are
 loaded in batches (`--batch-files`, ~25 GB each at the default 500), assigned on a single
 GPU, and scattered into `[N_FILES]`-wide accumulators. I/O dominates (~17 files/s ⇒ ~13 min
 to read all 1.3 TB), so one GPU suffices and the broken inter-GPU P2P never enters.
 
 ```bash
-# full run over all 13,021 files (~15 min); writes signatures.npz, file_summary.csv,
-# cluster_mix.csv, manifest.json, report.md, residual_map.npy, label_map.npy under --out
+# full run over all 13,021 files (~20 min); writes signatures.npz, file_summary.csv,
+# cluster_mix.csv, cluster_margin.csv, manifest.json, report.md, residual_map.npy,
+# label_map.npy, margin_map.npy under --out
 python3 src/analysis/file_signature.py --out runs/signatures/v6_d64
 # quick correctness check on 200 files: the printed mean mean_residual must match
 # the model's final_obj_per_token (~1888), and mean residual_frac ~31.5%
@@ -586,6 +673,25 @@ chronological order (v1 → v8 below).
   maps). It therefore holds only `report.md`, `temporal_report.md`, `sample.json` and `maps/` —
   the `model.pt`/`assignments.pt` it describes live in `v8_seed2_d64/`, and both reports carry
   that directory in their header. Numbers are v8's; only the presentation is new.
+- `v10_soft_d64/` — the first real **`--soft` MPPCA** run (same v2 token sample, K=128, d=64,
+  `--soft-topm 4 --soft-temp 17`, 25 iterations, 161.3 min). The verdict: **soft assignment
+  does not change the clustering, it annotates it.**
+
+  | comparison | NMI vs v6 |
+  |---|---|
+  | v7 (different seed, hard) | 0.683 |
+  | v8 (different seed, hard) | 0.688 |
+  | **v10 (soft)** | **0.737** |
+
+  Switching from hard k-subspaces to MPPCA EM perturbs the partition *less than changing the
+  random seed does*. The objective is likewise inside the seed spread: 1892.47 against v6's
+  1887.83 (+0.25%; v7 was 1892.30). So per-token responsibilities cost essentially nothing in
+  hard-residual terms. `sigma2` lands in [0.30, 1.63] — far above the 1e-3 floor, so no EM
+  collapse — and the minimum cluster is 20,866 tokens: no stranding, though ~10× smaller than
+  v6's 227,886, so the soft size distribution is more uneven.
+  Caveat on the responsibilities themselves: mean top-1 is **0.950** with only 15.1% of tokens
+  below 0.9, more peaked than intended — see the `--soft-temp` note above, whose empirical
+  validation has been retracted.
 - **Seed robustness (the final check).** Across v6 (seed 0), v7 (seed 1), v8 (seed 2):
 
   | metric | seed 0 (v6) | seed 1 (v7) | seed 2 (v8) |

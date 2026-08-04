@@ -1,6 +1,6 @@
-# Clustering report (subspace_kmeans) — `runs/clustering/v4_subspace_big_d64/`
+# Clustering report (subspace_kmeans) — `runs/clustering/v4_subspace_big_d64`
 
-*Generated 2026-07-31 17:59 by `analyze_clusters.py`. K=128 affine subspaces of dim 64 in 2048-dim token space, 86,016,000 tokens.*
+*Generated 2026-08-04 13:33 by `analyze_clusters.py`. K=128 affine subspaces of dim 64 in 2048-dim token space, 86,016,000 tokens.*
 
 ## Overview
 
@@ -43,10 +43,10 @@ The core quantities, defined once here:
 - **Reproduce this exact sample** for a new run, with this or any other `cluster_io.py`-based script (e.g. to vary K, d, or the algorithm itself):
 
   ```bash
-  python3 src/clustering/subspace_kmeans.py --files-from runs/clustering/v4_subspace_big_d64//sample.json --seed 0 --tokens-per-file 12288 \
+  python3 src/clustering/subspace_kmeans.py --files-from runs/clustering/v4_subspace_big_d64/sample.json --seed 0 --tokens-per-file 12288 \
       --clusters <K> --out <new_dir>
   ```
-- File ids (first 20 of 7000, full list in `runs/clustering/v4_subspace_big_d64//sample.json`): 0, 1, 6, 8, 9, 10, 11, 12, 13, 14, 16, 18, 19, 21, 22, 24, 25, 26, 27, 28 …
+- File ids (first 20 of 7000, full list in `runs/clustering/v4_subspace_big_d64/sample.json`): 0, 1, 6, 8, 9, 10, 11, 12, 13, 14, 16, 18, 19, 21, 22, 24, 25, 26, 27, 28 …
 
 ## Convergence
 
@@ -256,7 +256,7 @@ Spatial columns are over the 12288 HEALPix cells with data. `share` is printed t
 The world map, 12 monthly dominant-cluster maps, and seasonal profiles live in the dedicated **temporal & spatial report** (`temporal_spatial.py`), read at calendar (monthly) resolution with continent outlines and a smooth heatmap — clearer than a single 12,288-pixel map. Generate it from this run's frozen model + assignments:
 
   ```bash
-  python3 src/analysis/temporal_spatial.py --dir runs/clustering/v4_subspace_big_d64/ --out runs/clustering/v4_subspace_big_d64//temporal_report.md
+  python3 src/analysis/temporal_spatial.py --dir runs/clustering/v4_subspace_big_d64 --out runs/clustering/v4_subspace_big_d64/temporal_report.md
   ```
 
 The per-cluster `cells@50%` / `owned` / `files@50%` / `tCV` columns above are the compact in-report summary of that same spatial/temporal structure.

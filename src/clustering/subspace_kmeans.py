@@ -85,7 +85,10 @@ def parse_args():
                         "collapse back to one-hot (measured: mean top-1 weight 0.99). The "
                         "likelihood treats all 2048 dims as independent evidence though the "
                         "data has ~121 effective dims, so T ~ 2048/121 ~ 17 de-overcounts it "
-                        "and recovers graded responsibilities (deterministic-annealing EM).")
+                        "(deterministic-annealing EM). NOTE T=17 is an unvalidated prior: "
+                        "measured on the full v10 run it still gives mean top-1 0.950 / "
+                        "15.1%% below 0.9, more peaked than an early smoke test suggested. "
+                        "Matching the ~33%% residual-margin ambiguity would need T~30-40.")
     p.add_argument("--chunk-size", type=int, default=262144, help="tokens per GPU chunk")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--gpus", type=int, default=min(2, torch.cuda.device_count()))
