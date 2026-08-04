@@ -51,7 +51,16 @@
     "residual_j(x)": "||x-mu_j||^2 - ||U_j^T(x-mu_j)||^2  (affine)",
     "mean_residual": "mean over the file's 12288 tokens of residual_(assigned)(x)",
     "residual_frac": "mean_residual / mean_total  (total = E||x-mu_global||^2, mu_global frozen from the trained cluster means)",
-    "mix_k": "fraction of the file's 12288 cells assigned to cluster k"
+    "mix_k": "fraction of the file's 12288 cells assigned to cluster k",
+    "margin(x)": "(R_2nd(x) - R_1st(x)) / R_1st(x)  -- relative assignment margin, the subspace-native separation metric (silhouette's analogue for K-subspaces; silhouette itself assumes Euclidean/spherical clusters)",
+    "near_tie": "margin < 0.10",
+    "cluster_near_frac[j]": "share of the tokens ASSIGNED to j that are near-ties",
+    "cluster_runner_up[j]": "argmax_k of the [K,K] runner-up confusion matrix row j = j's single closest competitor for its own tokens"
+  },
+  "margin": {
+    "near_tie_threshold": 0.1,
+    "global_near_tie_frac": 0.33357208027737245,
+    "margin_map.npy": "[13021, 12288] float16 -- per-cell margin, clipped to 10.0"
   },
   "cell_maps": {
     "residual_map.npy": "[13021, 12288] float32 -- residual_(assigned)(x) for every HEALPix cell of every file (NESTED ordering); row i is file_ids[i], NOT file id i",
@@ -60,6 +69,6 @@
     "normalisation": "z[t,cell] = (residual_map[t,cell] - cell_mean_residual[cell]) / cell_std_residual[cell]  -- raw residuals are not comparable across cells",
     "aligns_with": "same [T, 12288] NESTED grid as runs/persistence/*/err_persist.npy (one row shorter there: transitions, not states)"
   },
-  "generated_at": "2026-07-31 17:41:22",
-  "wall_time_min": 19.1
+  "generated_at": "2026-08-04 10:39:47",
+  "wall_time_min": 17.5
 }

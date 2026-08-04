@@ -1,0 +1,41 @@
+Model: runs/clustering/v6_subspace_big_d64  K=128 d=64 affine=True  fp=82ca602ed7e7
+  model final_obj_per_token = 1887.83 (full-pass mean must match)
+Assigning 13,021 files (0..13020); max id 13020
+  writing per-cell maps: residual_map.npy [13021,12288] float32 (0.60 GiB) + label_map.npy int16
+  batch 1/27: 500/13021 files (13.8 files/s, 0.6 min, ETA 15.1 min)
+  batch 2/27: 1000/13021 files (13.1 files/s, 1.3 min, ETA 15.3 min)
+  batch 3/27: 1500/13021 files (13.0 files/s, 1.9 min, ETA 14.8 min)
+  batch 4/27: 2000/13021 files (12.9 files/s, 2.6 min, ETA 14.2 min)
+  batch 5/27: 2500/13021 files (12.8 files/s, 3.3 min, ETA 13.7 min)
+  batch 6/27: 3000/13021 files (12.8 files/s, 3.9 min, ETA 13.1 min)
+  batch 7/27: 3500/13021 files (12.6 files/s, 4.6 min, ETA 12.6 min)
+  batch 8/27: 4000/13021 files (12.5 files/s, 5.3 min, ETA 12.0 min)
+  batch 9/27: 4500/13021 files (12.5 files/s, 6.0 min, ETA 11.4 min)
+  batch 10/27: 5000/13021 files (12.3 files/s, 6.8 min, ETA 10.8 min)
+  batch 11/27: 5500/13021 files (12.2 files/s, 7.5 min, ETA 10.3 min)
+  batch 12/27: 6000/13021 files (12.1 files/s, 8.3 min, ETA 9.7 min)
+  batch 13/27: 6500/13021 files (12.0 files/s, 9.0 min, ETA 9.1 min)
+  batch 14/27: 7000/13021 files (11.9 files/s, 9.8 min, ETA 8.4 min)
+  batch 15/27: 7500/13021 files (11.9 files/s, 10.5 min, ETA 7.8 min)
+  batch 16/27: 8000/13021 files (11.7 files/s, 11.4 min, ETA 7.1 min)
+  batch 17/27: 8500/13021 files (11.6 files/s, 12.2 min, ETA 6.5 min)
+  batch 18/27: 9000/13021 files (11.5 files/s, 13.0 min, ETA 5.8 min)
+  batch 19/27: 9500/13021 files (11.5 files/s, 13.7 min, ETA 5.1 min)
+  batch 20/27: 10000/13021 files (11.5 files/s, 14.5 min, ETA 4.4 min)
+  batch 21/27: 10500/13021 files (11.5 files/s, 15.3 min, ETA 3.7 min)
+  batch 22/27: 11000/13021 files (11.4 files/s, 16.0 min, ETA 2.9 min)
+  batch 23/27: 11500/13021 files (11.4 files/s, 16.8 min, ETA 2.2 min)
+  batch 24/27: 12000/13021 files (11.4 files/s, 17.6 min, ETA 1.5 min)
+  batch 25/27: 12500/13021 files (11.4 files/s, 18.3 min, ETA 0.8 min)
+  batch 26/27: 13000/13021 files (11.3 files/s, 19.1 min, ETA 0.0 min)
+  batch 27/27: 13021/13021 files (11.3 files/s, 19.1 min, ETA 0.0 min)
+
+================ Per-file signatures done ================
+  files assigned            : 13,021
+  mean mean_residual        : 1888.12  (model obj 1887.83)
+  mean residual_frac        : 31.5%  (report in/held-out 31.5%)
+  residual_frac range       : 30.2% .. 32.8%
+  rare clusters (bottom ¼)  : 32 of 128
+  most anomalous file       : 10686  dt=2021-04-25T12  resid_frac=32.8%
+  wall time                 : 19.1 min
+  wrote                     : runs/signatures/v6_d64_new/{signatures.npz,file_summary.csv,cluster_mix.csv,manifest.json,report.md}

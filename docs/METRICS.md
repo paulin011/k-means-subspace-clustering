@@ -106,15 +106,80 @@ One row per cluster:
   Ordering-independent.
 - **owned** — number of cells where this cluster is the *most frequent* (dominant) label —
   how much "territory" it wins on the map.
-- **files** — fraction of the sampled time steps (files) in which the cluster appears at
-  all. ≈ 100% ⇒ persistent in time; low ⇒ intermittent.
+- **files@50%** — fraction of the sampled time steps (files) that together hold half this
+  cluster's tokens: the time-axis twin of `cells@50%`. It has a fixed reference point —
+  a cluster spread perfectly evenly over time needs half the steps to reach half its
+  tokens, so **50% ⇒ temporally uniform**, and **lower ⇒ concentrated into fewer snapshots**
+  (bursty / seasonal). On v6 it runs 17%…50%.
+  *This replaced a `files` column that reported the fraction of time steps in which the
+  cluster appeared **at all**. That test is vacuous here: with 12,288 cells spread over
+  K=128 clusters, every cluster turns up somewhere in nearly every snapshot, so the column
+  read exactly 100% for 112 of 128 clusters and took only 12 distinct values overall. Any
+  presence measure needs a threshold to carry information; `files@50%` avoids picking an
+  arbitrary one, separates 126/128 clusters, and correlates only 0.13 with cluster size so
+  it is not merely restating `share`.*
+- **maxAff** (`d > 0`) — this cluster's subspace affinity to its *nearest* neighbour,
+  `maxⱼ≠ᵢ ‖UᵢᵀUⱼ‖²_F / d` ∈ [0,1]. A per-row separation score: **high ⇒ another cluster
+  spans nearly the same directions**, making this row a merge candidate and hinting K is
+  too large. The affinity table lists only the top pairs globally, so a near-duplicate is
+  invisible there unless its pair happens to rank; this column always surfaces it.
 - **tCV** — temporal coefficient of variation: std/mean of the cluster's enrichment across
   the 10 time deciles. **0 ⇒ constant rate over time; high ⇒ concentrated in certain
   periods** (seasonal/trend signature).
+- **margin** / **near%** (only when a `cluster_margin.csv` from `file_signature.py` is
+  available — auto-detected, or passed with `--margins`) — the **assignment margin**, the
+  subspace-native separation metric. Every token is ranked against all K subspaces during
+  assignment, so the runner-up costs nothing extra: with `R₁ ≤ R₂` the two smallest
+  residuals of token *x*,
+
+      margin(x) = (R₂(x) − R₁(x)) / R₁(x)
+
+  is dimensionless — "how much worse is the second-best subspace". `margin` is its mean
+  over the tokens the cluster *owns*; `near%` is the share of those tokens with
+  `margin < 10%` (**near-ties**: assigned to this cluster, but barely).
+  *Why not silhouette:* the standard multi-metric cluster-evaluation recommendation is the
+  silhouette coefficient, which does **not** transfer here — it assumes Euclidean distance
+  to a centroid and roughly spherical clusters, the wrong geometry for subspaces. The
+  margin is built from the exact residual the algorithm minimizes, so it is the correct
+  analogue.
+  *Relation to `maxAff`:* `maxAff` is a purely geometric angle between two bases and never
+  touches the data; `near%` measures whether two clusters actually contest the same tokens.
+  Measured on v6 the two **correlate strongly** — Pearson +0.77, Spearman +0.78 — which is
+  the expected direction: subspaces that overlap in orientation do tend to fight over the
+  same tokens. `near%` is nonetheless not redundant, for three concrete reasons:
+  - **41% of its variance is unexplained** by `maxAff` (R² = 0.59).
+  - Its **dynamic range is far wider**: 0.9%…70.1% against `maxAff`'s 0.526…0.805, so it
+    separates crisp modes from contested ones much more sharply.
+  - It names a **different closest rival for 52% of clusters** (geometry's nearest
+    neighbour equals the data's runner-up for only 62/128).
+
+  The reason they can diverge is that `maxAff` sees *orientation only* — it is blind to
+  where the two means sit and where the data is actually dense. Two near-parallel but
+  distant flats score high affinity while never contesting a token (v6 c123: `maxAff` 0.697,
+  `near%` 1.3%), and a more moderately aligned pair sitting inside dense data contests
+  heavily (c122: `maxAff` 0.668, `near%` 45.7%). Because it needs a full data pass, `near%`
+  is produced by `file_signature.py` (which already computes the whole `[b, K]` residual
+  matrix) rather than by the report itself.
 - **radius** (k-center only, when `model.pt["radius"]` is present) — the *max* distance
   from centroid to any member, k-center's native minimax objective. Contrast with `trace`
   (mean squared distance, what k-means/subspace_kmeans minimize). A large radius relative
   to trace flags an **outlier-driven cluster**.
+
+**Cluster health flags** — a one-line summary printed under the table, because in a
+128-row table a degenerate row is easy to miss and each flag is actionable:
+
+- `owned == 0` — the cluster is never any cell's majority label, so it exists only as a
+  minority everywhere. It is not a spatial regime; check it is a real mode rather than a
+  leftover. (v6 flags clusters 13 and 98.)
+- **size < ¼ of the mean cluster size** — degenerately small; the re-seed guard should
+  normally prevent this, so it appearing means the guard is being outrun.
+- `maxAff > 0.9` — near-duplicate of another cluster ⇒ K is probably too large.
+- `near% > 50` (only with `--margins`) — most of the cluster's own tokens are near-ties
+  with a rival subspace, so the cluster is a slice of a continuum rather than a separated
+  mode. Listed worst-first and truncated to 10, since dozens of clusters can match (the
+  global near-tie rate is ~31%) and a 40-name list is not actionable. A high *global*
+  near-tie rate is not a defect of the fit — it is the measurement that motivates the
+  soft/MPPCA assignment (`subspace_kmeans.py --soft`).
 
 How the spatial/temporal stats are built:
 
@@ -123,6 +188,9 @@ How the spatial/temporal stats are built:
   are in the temporal & spatial report).
 - `cells@50%` — from each cluster's sorted-descending cumulative distribution across cells
   (the cells holding the first 50%).
+- `files@50%` — the same construction on the file axis: `file_counts [N_FILES, K]` sorted
+  descending per cluster, cumulated, and cut at 50%, then divided by the number of sampled
+  files so the "50% = uniform in time" reference holds regardless of sample size.
 - `enrich` `[10, K]` = `(decK / counts) / (dec_tot / T)` — ratio of a cluster's observed
   share in a time decile to its expected share if temporally flat. **1.0 = flat**, ≫ 1 =
   concentrated there. The decile is derived from the global file index (0…13020). (The
@@ -145,7 +213,7 @@ For `d = 0` this section is skipped (point clusters have no basis to compare).
 
 The world map and the temporal/seasonal analysis moved out of the main report into a
 dedicated `temporal_spatial.py` report. (The main report keeps the per-cluster `tCV` /
-`files` columns — a compact temporal summary — and points here.) All maps share one color
+`files@50%` columns — a compact temporal summary — and points here.) All maps share one color
 scale from `affinity_ordered_colors` (spectral seriation of the affinity matrix → `turbo`,
 so similar clusters share hues); the renderer (`worldmap.py`) adds **continent outlines**
 (cached Natural Earth 110m coastlines) and a smooth **heatmap** — the per-cell RGB is
