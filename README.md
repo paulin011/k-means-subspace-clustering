@@ -369,6 +369,75 @@ Writes `<dir>/holdout.json`; the next `analyze_clusters.py` run renders a **Held
 generalization** section from it automatically. (v6, d=64: held-out 31.5% vs in-sample
 31.5% — the subspaces generalise.)
 
+### `src/clustering/merge_clusters.py` — over-cluster then merge (fit at large K, merge down)
+
+Fits are seeded at the K you want, which makes them prone to the local minima k-means-style
+algorithms are known for. The standard cure is to **over-parameterise** — fit more clusters
+than you need, then **merge** — and it is specifically recommended for subspace clustering
+(start with enough clusters that each is likely drawn from a single subspace, then
+agglomerate). Full plan, literature and derivations: **`docs/ideas/overcluster_merge.md`**.
+
+The criterion is **Ward's linkage with this project's own objective in place of Ward's ESS**:
+merge the pair whose union increases the total orthogonal residual least,
+
+```
+ΔR(a,b) = R_{a∪b} − R_a − R_b ≥ 0,   R_j = n_j (tr(C_j) − Σ_{i≤d} λ_ji)
+```
+
+so a merge's price is quoted in the units the run already reports. `--merge-threshold` is
+that price **relative to the objective**: `0.002` = "accept any merge that costs < 0.2% of
+the objective". The reference point is the measured v6/v7/v8 seed spread of **0.24%**, i.e.
+the default merges only what is cheaper than run-to-run seed noise. `--criterion affinity`
+(principal-angle affinity) exists for comparison but is *not* the default — affinity sees
+subspace orientation only and is blind to mean placement and density (c123 maxAff 0.697 /
+near-tie 1.3% vs c122 maxAff 0.668 / near-tie 45.7%).
+
+**Scoring is exact and needs no data pass.** Second moments are additive over a merge, so
+`C = (S_a+S_b)/n − μμᵀ` is exact; `subspace_kmeans.py --save-moments` keeps the final
+sweep's `S [K,2048,2048]` (4.3 GB at K=256) that the fit already builds and normally throws
+away. The one hard term, `Σ_{i≤d} λ_i(C)`, comes from subspace iteration warm-started at
+`orth([U_a, U_b, δ])`, and `C` is never materialised — `C@V = (S_a@V + S_b@V)/n − μ(μᵀV)`
+keeps it a `bmm` at ~10 TFLOPS instead of 46.6 ms/pair of full `eigh`. Measured median error
+in `ΔR` on real tokens: 4.5% / 0.50% / 0.099% / 0.023% / **0.0016%** at 0..5 `--power-iters`
+(default 5). Without `moments.pt` it falls back to a PPCA surrogate that assumes an isotropic
+tail — **measured at ~35% error on real tokens** (the data has ~121 effective dims), fine for
+ranking pairs (Spearman 0.94) but not for a threshold in objective percent.
+
+The **full dendrogram is always computed** (down to `--min-k`) and the threshold applied
+afterwards as a *cut*, so re-tuning it is free and needs no refit; `merge_log.json` holds
+every step. `--target-k` cuts at an exact K instead. `--refit-iters` (default 3) then runs
+real sweeps on the parent's identical token sample, so every saved basis is an exact PCA fit
+and `counts == bincount(label)` holds. Output follows the standard `cluster_io` schema, so
+`analyze_clusters.py` / `holdout_eval.py` / `temporal_spatial.py` read a merged run unchanged
+(verified). `d=0` reduces to Ward's classic exact formula `ΔR = (n_a n_b/n)‖δ‖²`.
+
+```bash
+# fit at 256, keeping the moments
+python3 src/clustering/subspace_kmeans.py --files-from runs/clustering/v2_subspace_big/sample.json \
+    --seed 0 --clusters 256 --dim 64 --iters 25 --chunk-size 131072 --save-moments \
+    --max-ram-gb 420 --out runs/clustering/v11_k256_d64
+
+# merge down to 128 for a like-for-like comparison against v6
+python3 src/clustering/merge_clusters.py --dir runs/clustering/v11_k256_d64 \
+    --out runs/clustering/v12_k256to128_d64 --target-k 128 --refit-iters 3
+```
+
+Cost at K=256, d=64 (measured): 32,640 initial pairs in 6.2 min at `--power-iters 2`, ~4 s
+per accepted merge; a full 256→128 cascade at the default 5 iterations is ~20–30 min — a
+one-time step against a ~5 h fit. Peak GPU 21.9 GiB of 44.4 at `--chunk-size 131072`
+(**halving the chunk is required at K=256**: the assignment kernel holds `P=[B,K,d]` plus a
+second copy inside `(P*P).sum(-1)`, which is 2×17.2 GB at the default chunk).
+
+### `src/clustering/smoke_merge_clusters.py` — smoke tests for the merge
+
+Standalone, no test framework (the repo has none). Covers: an artificially split cluster must
+be the cascade's first merge and must recover the generative partition; the merged
+mean/trace identities against brute force (1e-9); **both scoring modes against `ΔR` computed
+brute-force from the member tokens**, on synthetic *and* real tokens; schema validity and
+basis orthonormality of the merged model; and the degenerate cuts (`--target-k K` a no-op,
+threshold 0 merges nothing, cut stops at the *first* violation). Run
+`python3 src/clustering/smoke_merge_clusters.py` (add `--synthetic-only` for a data-free run).
+
 ### `src/analysis/file_signature.py` — per-file regime signature + residual (for timestamp selection)
 
 Where the other scripts study the *clusters*, this one turns a frozen clustering run into a
