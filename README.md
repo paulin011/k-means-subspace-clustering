@@ -384,10 +384,20 @@ merge the pair whose union increases the total orthogonal residual least,
 ΔR(a,b) = R_{a∪b} − R_a − R_b ≥ 0,   R_j = n_j (tr(C_j) − Σ_{i≤d} λ_ji)
 ```
 
-so a merge's price is quoted in the units the run already reports. `--merge-threshold` is
-that price **relative to the objective**: `0.002` = "accept any merge that costs < 0.2% of
-the objective". The reference point is the measured v6/v7/v8 seed spread of **0.24%**, i.e.
-the default merges only what is cheaper than run-to-run seed noise. `--criterion affinity`
+so a merge's price is quoted in the units the run already reports, as a fraction of the
+objective. Two budgets, because they answer different questions — **measured on a K=256
+cascade, individual merges cost only 0.0002–0.0004 each while the cumulative cost reached
+1.67% over 56 merges and crossed the 0.24% seed spread after 14**:
+
+- `--max-total-cost` (**the main knob**, default `0.0024`) — cumulative objective given up.
+  The default is the measured v6/v7/v8 seed spread, i.e. *"merge until the damage equals
+  run-to-run seed noise"*.
+- `--merge-threshold` (default `0.002`) — per-merge guard against one catastrophic merge.
+  It is **not** the knob that picks K: any per-merge bound near the seed spread never fires.
+- `--target-k` — **takes precedence over both**, for an exact K (the reported cost then tells
+  you what that K cost you).
+
+`--criterion affinity`
 (principal-angle affinity) exists for comparison but is *not* the default — affinity sees
 subspace orientation only and is blind to mean placement and density (c123 maxAff 0.697 /
 near-tie 1.3% vs c122 maxAff 0.668 / near-tie 45.7%).
@@ -405,8 +415,8 @@ ranking pairs (Spearman 0.94) but not for a threshold in objective percent.
 
 The **full dendrogram is always computed** (down to `--min-k`) and the threshold applied
 afterwards as a *cut*, so re-tuning it is free and needs no refit; `merge_log.json` holds
-every step. `--target-k` cuts at an exact K instead. `--refit-iters` (default 3) then runs
-real sweeps on the parent's identical token sample, so every saved basis is an exact PCA fit
+every step. `--refit-iters` (default 3) then runs real sweeps on the parent's identical token sample
+(**~352 GB RAM for a 7000-file parent — do not overlap it with the fit that produced it**), so every saved basis is an exact PCA fit
 and `counts == bincount(label)` holds. Output follows the standard `cluster_io` schema, so
 `analyze_clusters.py` / `holdout_eval.py` / `temporal_spatial.py` read a merged run unchanged
 (verified). `d=0` reduces to Ward's classic exact formula `ΔR = (n_a n_b/n)‖δ‖²`.
@@ -417,7 +427,7 @@ python3 src/clustering/subspace_kmeans.py --files-from runs/clustering/v2_subspa
     --seed 0 --clusters 256 --dim 64 --iters 25 --chunk-size 131072 --save-moments \
     --max-ram-gb 420 --out runs/clustering/v11_k256_d64
 
-# merge down to 128 for a like-for-like comparison against v6
+# merge down to 128 for a like-for-like comparison against v6 (--target-k beats the budgets)
 python3 src/clustering/merge_clusters.py --dir runs/clustering/v11_k256_d64 \
     --out runs/clustering/v12_k256to128_d64 --target-k 128 --refit-iters 3
 ```

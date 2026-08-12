@@ -277,6 +277,21 @@ def s5_degenerate(device):
     check("cut stops at first violation",
           all(e["rel_cost"] <= tau for e in log[:nn]), f"{nn} merges at tau={tau:.3e}")
 
+    # --target-k must win over a threshold that would otherwise cut earlier: asking for an
+    # exact K and silently getting another is the footgun this precedence removes.
+    n_t = cut_index(log, "residual", 0.0, 3, K, max_total=0.0)
+    _, k_t = label_map(log, n_t, K)
+    check("--target-k overrides both budgets", k_t == 3, f"K_new={k_t} (want 3)")
+
+    # Cumulative cap fires where the per-merge cap never would.
+    cum = sum(e["rel_cost"] for e in log)
+    n_c = cut_index(log, "residual", 1e9, None, K, max_total=cum / 2)
+    tot = sum(e["rel_cost"] for e in log[:n_c])
+    check("cumulative cap bounds total cost", n_c < len(log) and tot <= cum / 2,
+          f"{n_c}/{len(log)} merges, total {tot:.4f} <= {cum / 2:.4f}")
+    check("per-merge cap alone would not have cut",
+          cut_index(log, "residual", 1e9, None, K, max_total=None) == len(log))
+
 
 def load_real(src, n_files, d_tokens, device, gen):
     """A few real latent files, subsampled -- for S3 on genuine token geometry."""

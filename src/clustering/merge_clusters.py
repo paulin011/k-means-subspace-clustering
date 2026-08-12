@@ -59,6 +59,9 @@ Typical use -- merge a K=256 fit down to 128 for a like-for-like comparison agai
 
   python3 src/clustering/merge_clusters.py --dir runs/clustering/v11_k256_d64 \
       --out runs/clustering/v12_k256to128_d64 --target-k 128 --refit-iters 3
+
+NOTE --refit-iters > 0 re-loads the parent's full token sample (~352 GB RAM for a 7000-file
+run), so it must not overlap with the fit that produced it.
 """
 
 import argparse
@@ -84,16 +87,23 @@ def parse_args():
                         "affinity: mean squared principal-angle cosine -- orientation only, "
                         "blind to mean placement; for comparison")
     p.add_argument("--merge-threshold", type=float, default=0.002,
-                   help="stop when the cheapest merge costs more than this. For "
-                        "--criterion residual the cost is the RELATIVE objective increase "
-                        "dR/R_total, so 0.002 = 'accept anything that degrades the objective "
-                        "by <0.2%%' (the v6/v7/v8 seed spread is 0.24%%, i.e. this default "
-                        "merges only what is cheaper than run-to-run seed noise). For "
-                        "--criterion affinity it is instead a principal-angle affinity in "
-                        "[0,1] (merge while the best pair exceeds it; try 0.9)")
+                   help="PER-MERGE budget: stop when the single cheapest remaining merge "
+                        "costs more than this, as a fraction of the objective (dR/R_total). "
+                        "Note individual merges are cheap -- MEASURED at 0.0002..0.0004 on a "
+                        "K=256 cascade -- so this is a guard against one catastrophic merge, "
+                        "NOT the knob that picks K; use --max-total-cost or --target-k for "
+                        "that. Under --criterion affinity it is instead a principal-angle "
+                        "affinity in [0,1] (merge while the best pair exceeds it; try 0.9)")
+    p.add_argument("--max-total-cost", type=float, default=0.0024,
+                   help="CUMULATIVE budget and the main knob (--criterion residual only): "
+                        "stop once the merges given up this much of the objective in total. "
+                        "Default 0.0024 = the measured v6/v7/v8 seed spread of 0.24%%, i.e. "
+                        "'merge until the damage equals run-to-run seed noise'. Pass a huge "
+                        "value to disable. Ignored when --target-k is given")
     p.add_argument("--target-k", type=int, default=None,
-                   help="also stop once this many clusters remain (whichever cut comes "
-                        "first). Use alone with --merge-threshold 1e9 to force an exact K")
+                   help="merge down to exactly this many clusters. TAKES PRECEDENCE over "
+                        "both budgets -- an exact K is exactly what they would otherwise "
+                        "choose for you (the reported cost then tells you what it cost)")
     p.add_argument("--refit-iters", type=int, default=3,
                    help="assignment/update sweeps on the original token sample after the "
                         "cut, to replace surrogate bases with exact PCA ones (0 = no data "
@@ -418,21 +428,40 @@ def run_cascade(state, K, d, device, criterion, pair_batch, min_k, r_total, mom=
     return log
 
 
-def cut_index(log, criterion, threshold, target_k, K):
-    """Number of merges to keep: the FIRST step that violates the threshold ends the cut.
+def cut_index(log, criterion, threshold, target_k, K, max_total=None):
+    """Number of merges to keep.
 
-    Greedy Ward on a surrogate is not guaranteed inversion-free, so a later cheap step must
-    not resurrect the cascade past an expensive one.
+    --target-k, when given, WINS OUTRIGHT: asking for an exact K and silently getting a
+    different one because a threshold tripped is the worst possible surprise, and the
+    thresholds' job (choosing K for you) is precisely the one --target-k takes over.
+
+    Otherwise the cut is the first step violating either budget. Two are offered because
+    they answer different questions, and the per-merge one alone is a trap:
+
+      per-merge (`threshold`)  guards against one catastrophic merge. MEASURED on a K=256
+          cascade, individual merges cost ~0.0002-0.0004 of the objective and climb very
+          slowly, so any per-merge bound near the run-to-run seed spread (0.24%) never fires
+          and means "merge everything".
+      cumulative (`max_total`) is the one denominated like the numbers this project quotes:
+          total objective given up so far. On that same cascade the cumulative cost reached
+          1.67% over 56 merges and crossed the 0.24% seed spread after 14 -- i.e. it is the
+          budget that actually discriminates, hence the default.
+
+    The FIRST violating step ends the cut: greedy Ward on a cascade is not guaranteed
+    inversion-free, so a later cheap step must not resurrect it past an expensive one.
     """
-    n = len(log)
+    if target_k is not None:
+        return max(K - target_k, 0)
+    n, total = len(log), 0.0
     for i, e in enumerate(log):
+        total += e["rel_cost"]
         bad = (e["rel_cost"] > threshold) if criterion == "residual" \
             else (e["affinity"] < threshold)
+        if criterion == "residual" and max_total is not None and total > max_total:
+            bad = True
         if bad:
             n = i
             break
-    if target_k is not None:
-        n = min(n, max(K - target_k, 0))
     return n
 
 
@@ -545,14 +574,21 @@ def main():
     torch.backends.cuda.matmul.allow_tf32 = True
     inversions = sum(1 for i in range(1, len(log)) if log[i]["key"] < log[i - 1]["key"])
 
-    n_merges = cut_index(log, args.criterion, args.merge_threshold, args.target_k, K)
+    n_merges = cut_index(log, args.criterion, args.merge_threshold, args.target_k, K,
+                         max_total=args.max_total_cost)
     lmap, K_new = label_map(log, n_merges, K)
     cum = sum(e["rel_cost"] for e in log[:n_merges])
     print(f"Cut after {n_merges} merges: K {K} -> {K_new}  "
           f"(cumulative objective cost {cum:+.4%}; {inversions} cascade inversions)", flush=True)
-    if n_merges < len(log):
+    if args.target_k is not None:
+        would = cut_index(log, args.criterion, args.merge_threshold, None, K,
+                          max_total=args.max_total_cost)
+        print(f"  --target-k took precedence; the budgets alone would have cut after "
+              f"{would} merges (K -> {K - would})", flush=True)
+    elif n_merges < len(log):
         print(f"  next merge would cost {log[n_merges]['rel_cost']:.4%} "
-              f"(threshold {args.merge_threshold})", flush=True)
+              f"(per-merge cap {args.merge_threshold}, cumulative cap "
+              f"{args.max_total_cost})", flush=True)
 
     # Replay to the cut. Re-running the accepted merges from the pristine state is cheaper
     # than snapshotting the [K, 2048, d] bases at every step of the full cascade (the
