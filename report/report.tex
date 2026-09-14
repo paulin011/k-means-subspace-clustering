@@ -1,0 +1,233 @@
+% Two-page findings report on the latent-token clustering project.
+% Build:  cd report && pdflatex report.tex && pdflatex report.tex
+% Minimal TeX install on this box: only geometry/graphicx/amsmath are available
+% (no booktabs/algorithm/xcolor, and the Times metrics are missing), so tables
+% use \hline, the pseudocode box is hand-rolled and the font is Computer Modern.
+\documentclass[10pt,twocolumn]{article}
+\usepackage[a4paper,margin=1.7cm,columnsep=0.7cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+
+% ---- measured numbers from the k-means / k-center baseline sweep ----
+% (v13-v15 = k-means d=0 seeds 0/1/2; v16 = k-center seeds 0/1/2; filled in
+% from the run logs once the sweep finishes)
+\newcommand{\kmobj}{5023.8}              % best k-means obj/token (v13 so far)
+\newcommand{\kmspread}{\textbf{TBD}}     % k-means seed spread (%)
+\newcommand{\kmresid}{83.7\%}            % k-means residual as % of total variance
+\newcommand{\kmnmi}{\textbf{TBD}}        % NMI(k-means, v6)
+\newcommand{\kmpca}{\textbf{TBD}}        % post-hoc d=64 PCA residual of k-means partition
+\newcommand{\kcobj}{\textbf{TBD}}        % best k-center obj/token
+\newcommand{\kcresid}{\textbf{TBD}}      % k-center residual as % of total variance
+\newcommand{\kcrad}{\textbf{TBD}}        % k-center minimax radius (best seed)
+\newcommand{\kcminmax}{\textbf{TBD}}     % k-center size min/max
+% ---------------------------------------------------------------------
+
+\setlength{\parskip}{0pt}
+\setlength{\textfloatsep}{8pt}
+\setlength{\floatsep}{8pt}
+\setlength{\intextsep}{8pt}
+\setlength{\abovecaptionskip}{5pt}
+
+\begin{document}
+
+\twocolumn[{%
+\begin{center}
+{\LARGE Subspace Structure of WeatherGenerator Latent Tokens\par}
+\vspace{5pt}
+{\large Clustering methods and findings\par}
+\vspace{6pt}
+Paulin Saher, September 2026
+\end{center}
+\vspace{4pt}
+\noindent\rule{\textwidth}{0.4pt}
+\vspace{2pt}
+\begin{quote}
+\small\textbf{Abstract.}
+We analyse the 2048-dimensional tokens the WeatherGenerator encoder produces
+for nine years of ERA5 states (160\,M tokens). A K-subspaces clustering, a
+variant of k-means in which each cluster is a 64-dimensional affine subspace
+and tokens are assigned by their distance to that subspace, explains 68.5\% of
+token variance with K=128 clusters. Plain k-means leaves \kmresid{} of the variance unexplained and
+produces a different partition. The clusters turn out to be
+climate regimes. They are geographically coherent, a minority of them carries
+a strong seasonal cycle, and the El Ni\~no winters stand out in the central
+Pacific. Most importantly, the largest residual outliers of the fit coincide
+with documented extreme weather events, so the encoder does capture extremes.
+\end{quote}
+\vspace{4pt}
+}]
+
+\section{Introduction}
+The WeatherGenerator (WGen) model encodes each 6-hourly ERA5 atmospheric state
+into 12{,}288 tokens, one per HEALPix grid cell, with 2048 dimensions each.
+This project analyses the encoder output for all 13{,}021 available states,
+covering 2014-01-01 00:00 to 2022-11-30 00:00 UTC. Two questions drove the
+analysis, in order of importance. First, can we tell from the latents whether
+the model actually encodes extreme weather events, meaning that real extremes
+show up as outliers? Second, how does the model handle spatial and temporal
+structure? Clustering answers both at once. It yields a regime label and a
+residual per cell and timestep, and the residual is the outlier score.
+
+\section{Methodology}
+\textbf{Data.} 13{,}021 encoder states of shape $[12{,}288 \times 2048]$,
+1.2\,TB in total. All clustering runs use the same fixed random sample of
+7{,}000 states times all cells, 86\,M tokens. Evaluation replays the fitted
+model on the full dataset or on held-out states.
+
+\textbf{K-subspaces.} Cluster $j$ is not a centre $\mu_j$ but an affine
+subspace $(\mu_j, U_j)$ with orthonormal basis $U_j \in
+\mathbb{R}^{2048\times 64}$. The difference to k-means lies in the assignment
+step. A token $x$ is assigned by its distance to the whole subspace,
+\begin{equation}
+r_j(x) \;=\; \underbrace{\|x-\mu_j\|^2}_{\text{k-means distance}}
+\;-\; \underbrace{\|U_j^\top (x-\mu_j)\|^2}_{\text{part the subspace explains}},
+\label{eq:resid}
+\end{equation}
+the centre distance minus what the cluster's own principal directions account
+for. A token far from $\mu_j$ along directions in which the cluster normally
+varies still belongs to it. The update step is exact PCA per cluster.
+
+\medskip
+\noindent\fbox{\parbox{0.965\columnwidth}{\small
+\textbf{Algorithm} (K-subspaces, $K{=}128$, $d{=}64$, $D{=}2048$)\\[2pt]
+\textbf{init:} $\mu_j \leftarrow K$ random tokens, $U_j \leftarrow 0$\\
+\textbf{repeat} until $<$0.1\% of labels change:\\
+\hspace*{1em}1. assign each token to the nearest subspace:\\
+\hspace*{2em}for every token $x$ and cluster $j$:\\
+\hspace*{3em}$z \leftarrow U_j^\top(x-\mu_j)$ \hfill{\footnotesize coords inside the subspace}\\
+\hspace*{3em}$r_j(x) \leftarrow \|x-\mu_j\|^2 - \|z\|^2$ \hfill{\footnotesize Eq.~\ref{eq:resid}}\\
+\hspace*{2em}$\mathrm{label}(x) \leftarrow \arg\min_j r_j(x)$\\
+\hspace*{1em}2. refit each cluster to its members:\\
+\hspace*{2em}$\mu_j \leftarrow$ mean of its tokens\\
+\hspace*{2em}$U_j \leftarrow$ top-$d$ eigenvectors (PCA) of their covariance\\
+\hspace*{1em}3. split the largest cluster to replace any collapsed one
+}}
+\medskip
+
+Setting $d=0$ turns the same code into plain k-means, the first baseline.
+Greedy k-center, which minimises the largest distance to a centre, is the
+second. A soft-assignment variant (an MPPCA mixture) was fitted afterwards and
+is used only to quantify per-token uncertainty. One fit takes about 2 hours on
+two A40 GPUs. Results were checked on held-out states, across three random
+restarts, and against an independent run at $K{=}256$ merged back to 128.
+
+\section{Results}
+
+\subsection{Fit quality and baselines}
+At $K{=}128$, $d{=}64$ the fit splits token variance into 8.4\% between
+cluster centres, 60.1\% captured inside the subspaces, and 31.5\% residual.
+So almost all of the structure is in each cluster's directions of variation
+rather than in centre separation. On held-out dates the residual fraction is
+also 31.5\%, meaning no overfitting.
+
+Table~\ref{tab:methods} compares the methods.
+K-means leaves \kmresid{} of the variance unexplained. Its partition also
+differs from the subspace one (NMI \kmnmi). Even when its clusters are given
+the same 64-dimensional PCA fit after the fact, the residual is still
+\kmpca{} per token against 1877 to 1888 for the subspace runs. Re-assigning
+tokens under the fitted subspace model by centre distance alone changes 57\%
+of the labels and adds 20\% residual. K-center is not competitive on this
+objective. Its greedy selection chases outliers, which yields cluster sizes
+from \kcminmax{} and a minimax radius of \kcrad.
+
+\begin{table}[t]
+\centering\small
+\caption{Methods on the identical 86M-token sample, $K{=}128$.
+\textbf{obj/token} is the mean squared distance from a token to its assigned
+centre (subspace rows: to its assigned subspace). \textbf{\% of var} is
+obj/token divided by the total token variance of 5999, the share of variance
+left unexplained, lower is better. \textbf{spread} is best minus worst
+obj/token across 3 random inits.}
+\label{tab:methods}
+\begin{tabular}{lrrr}
+\hline
+method & obj/token & \% of var & spread \\
+\hline
+k-center (greedy) & \kcobj & \kcresid & \\
+k-means ($d{=}0$) & \kmobj & \kmresid & \kmspread \\
+K-subspaces ($d{=}64$) & 1887.8 & 31.5\% & 0.24\% \\
+~~+ overcluster-merge & 1877.0 & 31.3\% & \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsection{Stability and the choice of K}
+Three restarts from different seeds land within 0.24\% in objective and agree
+pairwise at NMI 0.68 to 0.72 (chance level 0.13). Fitting at $K{=}256$ and
+merging back to 128 with a Ward-style criterion improves the objective by
+0.57\%, which is 2.4 times the seed spread, while agreeing with the direct fit
+only at the seed-to-seed level. The merge cost curve has no knee anywhere
+between $K{=}256$ and 32, and 33\% of tokens lie within a 10\% residual margin
+of a second cluster. There is no natural number of regimes in this data. K is
+a resolution choice.
+
+\subsection{Extreme events are visible as outliers}
+The fit provides a residual per cell and timestep. Raw residuals are not
+comparable across cells, their per-cell mean spans a factor of 15.7, so each
+cell is standardised against its own history. The top 0.1\% of standardised
+residuals are not noise. 89\% of flagged cells have a flagged neighbour (3\%
+for random cells) and 32\% persist to the next 6\,h step (0.01\% random).
+The largest connected events match documented extremes: the February 2018
+sudden-stratospheric-warming Arctic heat anomaly ($z{=}22.4$), the December
+2015 above-freezing North Pole event ($z{=}19.5$), the August 2016 Arctic
+cyclone, and the March 2022 East-Antarctic heatwave. The March 2022 event,
+the largest temperature anomaly on record, sits below the global median in
+raw residual because the Antarctic plateau barely moves in latent space. Raw
+latent residual is not calibrated to physical anomaly size, only the
+standardised score recovers such events.
+
+\subsection{Locality: the clusters have territories}
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.9\columnwidth]{map_annual.png}
+\caption{Dominant cluster per cell over the full year ($K{=}128$, similar
+clusters share hues), computed without any location input.}
+\label{fig:map}
+\end{figure}
+The clustering receives no location or time input, yet the dominant cluster
+per cell forms contiguous regions that follow tropics, storm tracks, polar
+caps and continents (Fig.~\ref{fig:map}). At raw presence level most clusters
+look global, a typical mid-size cluster appears at least once in a third of
+all cells, yet half of its tokens sit in only 4.4\% of the globe. Across the
+run 77 of 128 clusters reach occupancy above 0.9 somewhere while 12 never
+pass 0.5. So clusters have clear territories that only a threshold reveals,
+which the newer per-cluster reports now apply.
+A few clusters encode something specific on their own. Cluster 27 owns the
+ring around the North Pole between 75 and 86$^\circ$N, the zone where sea ice
+is declining fastest, with occupancy 1.0 in its core cells. Its residual is
+nearly as large as the 6-hour change itself (ratio 0.92, third highest of
+128), so the encoder gives this region its own regime but models it
+comparatively poorly.
+
+\subsection{Seasonality and El Ni\~no}
+Seasonality is real but concentrated in a minority of clusters. The median
+seasonality score (std/mean of the twelve monthly enrichments) is 0.17, and
+only 35 of 128 clusters exceed 0.5, mostly winter or summer regimes. Whether
+this concentration is a property of the atmosphere or partly of the clustering
+method is open. At the level of the map, 42.8\% of cells change their dominant
+cluster between DJF and JJA, while the diurnal counterpart is a null (2.6\%
+between 00Z and 12Z). The leading principal component of the per-date regime
+mix is an almost pure seasonal harmonic ($R^2{=}0.992$). On top of the
+seasonal cycle, interannual events show:
+in the Ni\~no 3.4 box the three El Ni\~no winters of the period (2015/16,
+2018/19, 2019/20) have a mean anomaly score of 0.55 to 0.60 while four of the
+five remaining winters sit at 0.12 to 0.18, and during the record 2015/16
+event the cluster that usually dominates the box drops to its nine-year
+occupancy minimum.
+
+\section{Discussion}
+Both guiding questions have positive answers. Documented extremes
+(SSW 2018, North Pole melt 2015, Antarctic heatwave 2022) are recoverable
+from the latents as spatially and temporally coherent outlier events, with the
+caveat that raw residuals must be standardised per cell first because latent
+residual size is not calibrated to physical anomaly size. Spatially the
+latents are organised into regimes with real territories, which only become
+visible under a mass threshold since almost every cluster is present somewhere
+on the globe. Temporally the seasonal cycle dominates and is carried by a
+minority of clearly seasonal clusters, with El Ni\~no winters visible on top
+of it. Occasionally a single cluster isolates a specific physical region, such
+as the Arctic sea-ice ring. Finally, the latent space is a continuum with no
+natural K, and its structure lies in per-cluster directions of variation,
+which is what required the subspace distance.
+
+\end{document}
