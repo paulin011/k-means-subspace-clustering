@@ -23,13 +23,17 @@ parses coastlines with stdlib `json`).
 ```
 src/              scripts, grouped by role:
   common/           cluster_io.py, worldmap.py   — shared by every other directory
-  clustering/       subspace_kmeans.py, holdout_eval.py, run_seed_sweep.sh
+  clustering/       subspace_kmeans.py, merge_clusters.py, kcenter.py, holdout_eval.py,
+                    smoke_merge_clusters.py, run_seed_sweep.sh, run_baseline_sweep.sh
   analysis/         analyze_clusters.py, temporal_spatial.py, file_signature.py,
-                    analyze_forecast_error.py   — everything that reads a finished run
-  forecast/         persistence_error.py        — per-cell error extraction (runs here)
-  supercomputer/    extract_forecast_error.py   — runs only where the WGen checkpoint lives
-docs/     METRICS.md, wgen_architecture.md, INTERPRETATION_i100.md, ideas/
-runs/     clustering/  signatures/  persistence/  forecast_error/   (all generated results)
+                    cluster_probe.py, analyze_forecast_error.py, partition_nmi.py,
+                    partition_subspace_residual.py, compare_selection_signals.py
+                                                — everything that reads a finished run
+  forecast/         persistence_error.py, proxy_forecast.py  — per-cell error tracks
+  supercomputer/    extract_forecast_error.py, fe_space_check.py — need the WGen checkpoint
+docs/     METRICS.md, wgen_architecture.md, LATENT_OUTLIERS.md, ENSO_CHECK.md, ideas/
+runs/     clustering/  signatures/  persistence/  forecast_error/  proxy/  selection/
+report/   the 2-page LaTeX findings report (report.tex → report.pdf)
 logs/     run logs
 assets/   ne_110m_coastline.geojson (coastline cache)
 latents_2/            the 1.2 TB dataset (gitignored)
@@ -82,6 +86,10 @@ as the landing page, and Claude Code only auto-loads the latter from the root.
 - **`docs/METRICS.md`** — definition and interpretation of every number in `report.md`.
 - **`docs/wgen_architecture.md`** — the upstream WeatherGenerator model, for the
   forecast-error work.
+- **`docs/ENSO_CHECK.md`** — the one-off Niño 3.4 measurement backing the El Niño claim in
+  the findings report (per-winter anomaly + occupancy table, method, and the honest limits).
+- **`report/`** — the 2-page LaTeX findings report for outside readers (`report.tex`,
+  compiled `report.pdf`, figure copy). Build: `cd report && pdflatex report.tex` (twice).
 
 ## Scripts
 
@@ -236,6 +244,60 @@ shared contract above:
 | `sample.json` | reproducible manifest (fingerprint, seed, tokens-per-file, file-id list in load order) — feed to `--files-from` |
 
 Project a token onto its cluster subspace with `(x - means[j]) @ U[j]`.
+
+### `src/clustering/kcenter.py` — greedy k-center baseline
+
+Classic Gonzalez farthest-point k-center: start from a random token, repeatedly add the
+token farthest from all chosen centers, then one assignment pass by plain squared distance.
+Optimizes the **minimax radius** (largest distance from any token to its center), not the
+sum — and that is the point of running it: it shows what that objective does to this data.
+Centers are data points, there is no refinement loop. Everything around the algorithm is
+`cluster_io.py`: the sample (use `--files-from` for comparability) and the `model.pt`/
+`assignments.pt` schema with `d=0` and the optional `radius [K]` field (Euclidean, not
+squared). Center *selection* runs on a GPU-resident uniform subsample (`--select-tokens`,
+default 8 M ≈ 30 GiB — the full 352 GB sample cannot live on one A40); assignment, counts,
+radius and the objective are computed over the **full** sample in one streamed fp32 pass.
+`--seeds 0 1 2` amortizes the ~352 GB load across init seeds (selection is seconds each),
+writing `<out>_seed<s>/` per seed.
+
+```bash
+python3 src/clustering/kcenter.py --files-from runs/clustering/v6_subspace_big_d64/sample.json \
+    -K 128 --seeds 0 1 2 --max-ram-gb 420 --out runs/clustering/v16_kcenter
+```
+
+**Measured (v16, K=128, v2 sample):** the minimax radius is the only stable output —
+146.4/146.8/147.5 across seeds — while everything else degenerates: obj/token
+9,744–13,723 (worse than a single global centroid, which would score the total variance
+5,998), because farthest-point selection anchors nearly all centers on outliers and one
+cluster ends up with 98.8% of all tokens (sizes 196 … 84.9 M).
+
+`src/clustering/run_baseline_sweep.sh` is the detached driver that produced v13–v16:
+3× k-means (`subspace_kmeans --dim 0`, seeds 0/1/2) then k-center (3 seeds, one load),
+strictly sequential (each job holds the ~352 GB sample; 512 GB box). Log:
+`logs/baseline_sweep.log`.
+
+### `src/analysis/partition_nmi.py` — compare two partitions
+
+Normalized mutual information (arithmetic-mean norm, the convention behind the historical
+0.68–0.72 seed-band numbers) between two runs' `assignments.pt`. Requires the runs to share
+the token sample (asserted on `file_id`/`cell_id`), is label-permutation invariant, reads
+no data, runs in seconds. `python3 src/analysis/partition_nmi.py --a <run> --b <run>`.
+
+### `src/analysis/partition_subspace_residual.py` — post-hoc subspace fit of a frozen partition
+
+The apples-to-apples number for comparing a `d=0` partition against a K-subspaces run:
+keep the run's labels frozen, fit each cluster's best d-dim affine subspace by exact PCA
+(one streamed moment pass, single GPU), and report `Σⱼ nⱼ(tr Cⱼ − Σᵢ≤d λⱼᵢ)/T` — the
+residual the partition *would* have under the richer model class, with no reassignment.
+Also prints the d=0 residual (must reproduce the run's `final_obj_per_token`; built-in
+invariant check) and the total token variance. Needs the run's full sample in RAM — do not
+overlap with another full-sample job. Writes `<dir>/posthoc_subspace.json`.
+
+**Measured (v14 k-means partition, d=64):** post-hoc residual **2,270.2**/token (37.8% of
+total variance) vs 1,877–1,892 (31.3–31.6%) for partitions optimized under the subspace
+criterion — the k-means *partition itself* is ~20% worse even when granted the same model
+class, mirroring `docs/PCA.md` §8b's 20.1% from the fixed-model direction. Invariant check
+passed at 5.9e-05 relative (the saved means lag the final relabel by one step, as expected).
 
 ### `src/analysis/analyze_clusters.py` — Markdown report generator
 
@@ -1072,6 +1134,20 @@ chronological order (v1 → v12 below).
   question "which clusters are redundant to within seed noise?" (answer here: essentially
   none), and **`--target-k` is the knob for actually hitting a target K** — it takes
   precedence over both budgets by design.
+- `v13_kmeans_d0/`, `v14_kmeans_seed1_d0/`, `v15_kmeans_seed2_d0/`, `v16_kcenter_seed{0,1,2}/`
+  — the **baseline sweep for the findings report** (2026-09-14, driver
+  `run_baseline_sweep.sh`), all on the v2/v6 sample (fingerprint `82ca602ed7e7`), K=128.
+  Plain k-means (`--dim 0`): objectives **5023.8 / 5021.1 / 5022.4** (spread 0.05%,
+  ~30× tighter than the subspace runs' 0.24%) = **83.7%** of the 5,998 total variance left
+  as residual, vs 31.5% for v6. NMI(k-means, v6) = **0.31** for both measured seeds — far
+  below the 0.68–0.72 subspace seed band, a genuinely different partition — and the k-means
+  seeds agree with *each other* only at **0.57–0.58**: a flatter objective landscape whose
+  partitions wander more. Post-hoc d=64 PCA on the frozen v14 partition still leaves
+  **2,270**/token (37.8%) vs 1,877–1,892 for subspace-optimized partitions
+  (`v14…/posthoc_subspace.json`). K-center (v16): minimax radius stable at 146.4–147.5,
+  everything else degenerate (obj 9,744–13,723, one cluster holds 98.8% of tokens) — see
+  the `kcenter.py` section. These numbers fill the method-comparison table in
+  `report/report.tex`.
 
 ## Hardware notes (this machine)
 
