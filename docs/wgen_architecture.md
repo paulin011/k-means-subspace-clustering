@@ -202,6 +202,107 @@ Concretely: `ForecastingEngine` advances tokens in **latent** space (`model.py:7
 
 ---
 
+## 5b. CORRECTION (2026-08-13): the FE's input and output are NOT the same space
+
+§2(a)/§2(d) above say the forecast engine is "latent→latent, 2048-in 2048-out, same shape,
+so `‖forecast_engine(latents_2[t]) − latents_2[t+1]‖²` is directly meaningful". **The shape
+claim is right; the *space* claim is wrong**, and the §4 error formula as written is
+confounded. Verified by reading the source, prompted by a report from the WGen side that
+"the embeddings going into the FE are not the ones coming out".
+
+**The mechanism — an asymmetric LayerNorm.**
+
+| | setting | effect |
+|---|---|---|
+| encoder output (`tokens_global` = `latents_2`) | `ae_global_trailing_layer_norm: **False**` in **every** config incl. `default_config.yml:37` and `config_forecasting.yml:37` (switch at `engines.py:520`) | raw residual-stream output, **un-normalised**, arbitrary per-token scale |
+| inside `ForecastingEngine` | `fe_layer_norm_after_blocks: **[7]**` in `config_forecasting.yml:61` (built at `engines.py:609-612`) | a **parameter-free** `LayerNorm(2048, elementwise_affine=False)` after block 7; blocks 8…15 then add residuals on top of a zero-mean/unit-variance token |
+
+So the FE maps *un-normalised encoder space* → *LayerNorm-anchored space*. The two are not
+metrically comparable, and a squared distance between them mixes the forecast error with a
+systematic scale/offset mismatch.
+
+**Why the model is built this way (it is a design, not a bug).** The rollout re-feeds the
+FE's own output: `for step in batch.get_output_idxs(): tokens = self.forecast_engine(tokens, step, rope_coords)`
+(`model.py:696-703`), 8 steps of 6 h under `config_forecasting_finetuning.yml`. The interior
+LayerNorm makes the FE **scale-invariant from block 7 onward**, which is exactly what lets it
+consume both the raw encoder state (step 0) and its own output (steps 1…7). The fixed point
+of that rollout is the LN-anchored manifold, *not* the encoder-output manifold.
+
+**Nothing in the loss ties the two together.** The base forecasting recipe trains on
+`LossPhysical` — *decoded* predictions vs physical truth. The FE's output only has to be
+readable by the decoder; it is never required to match the encoder's output distribution.
+Even where latent supervision exists (`LossLatentSSLStudentTeacher`, the JEPA configs), it
+runs on `tokens_post_norm = self.latent_pre_norm(tokens)` (`model.py:723`) — i.e. **on
+LayerNormed tokens**. The model's own notion of a comparable latent space is the *normalised*
+one; `latents_2` stores the *un-normalised* one (`z_pre_norm`, `model.py:669`).
+
+Corroborating detail: every FE Linear is initialised at `std=0.001` with residual blocks
+(`engines.py:614-621`), i.e. the FE starts as ≈identity — consistent with "a perturbation of
+the latent state", which is why the shape-level reading looked convincing.
+
+**Precision about how much of this is config-dependent.** `fe_layer_norm_after_blocks` is
+`[7]` in `config_forecasting.yml` / `config_forecasting_eerie.yml` /
+`config_era5_georing_avhrr*.yml`, but `[]` in `default_config.yml` and the JEPA configs — and
+`config_forecasting_finetuning.yml` (the recipe whose 2014→2022 window matches `latents_2`)
+is a thin overlay that sets neither, so it inherits from whichever base it is merged with.
+**Which config the production checkpoint used is §6 Q3, and it is now decision-relevant
+rather than bookkeeping — check it first.** The weaker but *config-independent* half of the
+argument still stands either way: the base forecasting loss is `LossPhysical` on **decoded**
+fields, so nothing in training ever requires the FE's output to lie in the encoder's output
+distribution; the LayerNorm is the concrete mechanism where it is enabled, not the only
+reason to distrust the comparison.
+
+### 5b.0 How big is the mismatch actually? (measured locally, no checkpoint needed)
+
+Per-token statistics of the stored encoder output, across the 2048 dims (files 0 / 5000 /
+13020, all three agree):
+
+| | per-token mean | per-token std | per-token L2 norm |
+|---|---|---|---|
+| `latents_2` (encoder output) | **+0.002** | **1.69** (sd 0.27 over tokens) | 76.2 |
+| a parameter-free LayerNorm output would be | 0.000 | 1.000 | 45.25 |
+
+So the encoder output is **already essentially mean-zero and only ~1.7× the LayerNorm scale**
+— it sits close to a normalised manifold, which is unsurprising for a pre-norm transformer
+residual stream. **The mismatch is therefore a modest scale factor, not an
+order-of-magnitude catastrophe**, and §5b as first written overstated it.
+
+That does not make the naive formula correct — a systematic ~1.7× scale gap still inflates
+`‖pred − truth‖²` by up to ~3× and would do so *non-uniformly*, since the FE's output scale
+is `1.0` at the block-7 LayerNorm plus whatever blocks 8–15 add back. **The decisive test is
+one forward pass**: run the FE on a few files and measure its output's per-token std. If it
+comes back ≈1.7, the two spaces are effectively aligned and the naive error is usable as-is;
+if it comes back ≈1.0, there is a real scale gap to correct. Ten minutes, once a checkpoint
+exists.
+
+### 5b.1 What to do instead
+
+1. **Normalise both sides identically before differencing** (cheap fix, ~2 lines):
+   `err[t,cell] = ‖LN(forecast_engine(x_t))[cell] − LN(latents_2[t+1])[cell]‖²`, using the
+   checkpoint's **frozen** `latent_pre_norm` (it is frozen under both finetuning recipes —
+   `freeze_modules` matches `.*latent.*`). Caveat: LayerNorm removes each token's mean and
+   scale, so this measures **pattern/direction error only**, not magnitude error. For
+   *selection* that is defensible; for "how wrong was the forecast" it is a real loss of
+   information, and should be stated wherever the array is used.
+2. **Or go to the physical loss**, which is the model's actual objective — per-cell error
+   inside `LossPhysical`. Costs the decoder + ERA5 targets + the `ipoint`→cell mapping that
+   §6 Q6 flags as unconfirmed. Correct but expensive.
+3. **The existing self-check already catches this.** `extract_forecast_error.py` aborts if
+   `skill = 1 − mean_fc/mean_ps ≤ 0` on the first batch. A space mismatch inflates `mean_fc`
+   above the persistence baseline, so the guard fires. **Run `--selfcheck-only` first**: it
+   is now a direct test of this specific defect, and comparing the skill with and without the
+   LN fix measures how much of the "error" was the mismatch.
+
+### 5b.2 A second, independent risk on the same line
+
+`model.py:689-691` does `tokens = tokens.reshape(shape).sum(axis=1)` — the encoder output is
+**summed over input steps** before entering the FE. `batch.get_num_steps()` (`batch.py:188`)
+takes it from the stream data, not from a scalar config key, so it cannot be settled from the
+configs alone. If the production run used more than one input step, the FE's true input is
+`Σₖ encoder(t−k)`, and a single `latents_2[t]` is **not** that tensor — an out-of-distribution
+input independent of the LayerNorm issue. **Verify from the checkpoint's saved config/batch
+before trusting any single-step formula** (this sharpens §6 Q1).
+
 ## 6. Open Questions / Things to Verify on the Supercomputer
 
 1. **[BLOCKING for §4] Is `latents_2/[t]` the step-0 encoder/analysis state that feeds `forecast_engine`?** Shape/NESTED ordering match it, but the export harness was not located (reader-1, reader-2 open Q). **Verify:** load a checkpoint, run `forecast_engine(latents_2[t])`, decode via `predict_decoders`, confirm the decoded physical field resembles ERA5 at t+1. If `latents_2` is instead a forecast-step latent, the error formula's target index shifts.

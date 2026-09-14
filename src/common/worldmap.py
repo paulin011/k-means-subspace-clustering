@@ -13,6 +13,17 @@ Map rendering has two readability features (see `render_world_map`):
     fill. RGB (not cluster id) is interpolated, which is valid because
     `affinity_ordered_colors` already makes subspace-similar clusters share colors, so a
     blended color between two neighbors is still meaningful.
+
+Also here, for `cluster_probe.py` (single-cluster reports):
+  - `render_scalar_map` -- the continuous-field twin of `render_world_map`: one or more
+    Mollweide panels of a per-cell scalar through a colormap, same griddata + coastline
+    path, with an optional interpolated mask and a second region's contour on top.
+  - `core_region(f, q)` -- the highest-density region: the smallest cell set holding a
+    fraction `q` of a field's mass, i.e. the report's `cells@50%` generalised to any `q`.
+  - `healpix_nest_neighbours` -- the real NESTED 8-neighbour query (reference face-crossing
+    tables), replacing the `cell >> 2` sibling proxy that fragments connected regions at
+    every HEALPix block boundary.
+  - `cell_lonlat` / `cell_xyz` -- per-cell geometry, the latter for spherical averaging.
 """
 
 import json
@@ -47,9 +58,20 @@ def healpix_ring_lonlat(nside, p):
     pp = p[m] - ncap
     i = pp // (4 * nside) + nside
     j = pp % (4 * nside) + 1
-    s = (i - nside + 1) % 2
+    # HEALPix staggers alternate belt rings by half a pixel. The reference offset is
+    #   fodd = 1 if (iring + nside) is odd else 1/2
+    # (healpix_base.cc pix2ang, equatorial branch). An earlier version of this line used
+    # `(i - nside + 1) % 2 / 2`, i.e. an offset of 0 or 1/2, which is short by a full pixel
+    # spacing on every ring where (iring+nside) is odd -- a rigid 2.8125 deg longitude
+    # rotation of half the belt rings at nside=32. Caught 2026-08-13 by the neighbour query
+    # below (neighbouring pixel centres came out up to 2.4x the pixel scale apart) and
+    # confirmed against the nside=1 ground truth, where the four equatorial base pixels must
+    # sit at lon 0/90/180/270: the old line returned 90/180/270/0. Fine-scale only -- the
+    # smoothed heatmaps in the existing reports are visually unaffected -- but it matters for
+    # anything measuring distance on the sphere (see cluster_probe.py's `rival_km`).
+    fodd = np.where(((i + nside) & 1) == 1, 1.0, 0.5)
     z[m] = 4.0 / 3 - 2 * i / (3.0 * nside)
-    phi[m] = np.pi / (2 * nside) * (j - s / 2)
+    phi[m] = np.pi / (2 * nside) * (j - fodd)
     m = p >= npix - ncap                                    # south polar cap (mirror)
     pp = (npix - p[m]).astype(np.float64)
     i = (np.floor(np.sqrt(pp / 2 - np.sqrt(np.floor(pp / 2))))).astype(np.int64) + 1
@@ -80,6 +102,120 @@ def healpix_nest2ring(nside, p):
     jp = (jpll[face] * nr + x - y + 1 + kshift) // 2
     jp = np.where(jp > 4 * nr, jp - 4 * nr, np.where(jp < 1, jp + 4 * nr, jp))
     return n_before + jp - 1
+
+
+# ---------------------------------------------------------------------------
+# NESTED neighbour query (the reference HEALPix face-crossing tables)
+# ---------------------------------------------------------------------------
+# A NESTED pixel id de-interleaves into (face, x, y). Eight of the nine 3x3 offsets
+# leave the face; `_NB_FACE[nbnum, face]` says which face you land on (-1 = no pixel
+# there at all) and `_NB_SWAP[nbnum, face >> 2]` says how (x, y) must be reflected /
+# transposed to express the landing point in the new face's own axes.
+# `nbnum` = 4 + (x underflow -1 / overflow +1) + 3*(y underflow -1 / overflow +1), so
+# the nine rows are S, SE, E, SW, centre, NE, W, NW, N in that order.
+_NB_XOFF = np.array([-1, -1, 0, 1, 1, 1, 0, -1])
+_NB_YOFF = np.array([0, 1, 1, 1, 0, -1, -1, -1])
+_NB_FACE = np.array([
+    [8, 9, 10, 11, -1, -1, -1, -1, 10, 11, 8, 9],        # 0  S
+    [5, 6, 7, 4, 8, 9, 10, 11, 9, 10, 11, 8],            # 1  SE
+    [-1, -1, -1, -1, 5, 6, 7, 4, -1, -1, -1, -1],        # 2  E
+    [4, 5, 6, 7, 11, 8, 9, 10, 11, 8, 9, 10],            # 3  SW
+    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],              # 4  centre
+    [1, 2, 3, 0, 0, 1, 2, 3, 5, 6, 7, 4],                # 5  NE
+    [-1, -1, -1, -1, 7, 4, 5, 6, -1, -1, -1, -1],        # 6  W
+    [3, 0, 1, 2, 3, 0, 1, 2, 4, 5, 6, 7],                # 7  NW
+    [2, 3, 0, 1, -1, -1, -1, -1, 0, 1, 2, 3]])           # 8  N  (mirror image of S)
+_NB_SWAP = np.array([[0, 0, 3], [0, 0, 6], [0, 0, 0], [0, 0, 5], [0, 0, 0],
+                     [5, 0, 0], [0, 0, 0], [6, 0, 0], [3, 0, 0]])
+
+
+def _nest2xyf(nside, p):
+    """NESTED pixel id -> (x, y, face). x takes the even bits, y the odd ones."""
+    p = np.asarray(p, dtype=np.int64)
+    face, pp = p // (nside * nside), p % (nside * nside)
+    x = np.zeros_like(pp)
+    y = np.zeros_like(pp)
+    for b in range(nside.bit_length()):
+        x |= ((pp >> (2 * b)) & 1) << b
+        y |= ((pp >> (2 * b + 1)) & 1) << b
+    return x, y, face
+
+
+def _xyf2nest(nside, x, y, face):
+    """(x, y, face) -> NESTED pixel id (inverse of `_nest2xyf`)."""
+    pp = np.zeros_like(x)
+    for b in range(nside.bit_length()):
+        pp |= ((x >> b) & 1) << (2 * b)
+        pp |= ((y >> b) & 1) << (2 * b + 1)
+    return face * (nside * nside) + pp
+
+
+def healpix_nest_neighbours(nside, p=None):
+    """The up-to-8 NESTED neighbours of each pixel, as an `[N, 8]` int64 array.
+
+    Column order is the `_NB_XOFF`/`_NB_YOFF` ring around the pixel; **-1 marks a
+    direction with no pixel in it**. Exactly 24 of the 12,288 nside=32 pixels have 7
+    rather than 8 neighbours: the eight HEALPix corner vertices (lon 0/90/180/270 at
+    lat +/-41.81 deg) are shared by only *three* pixels instead of four.
+
+    Why this and not "same HEALPix parent block" (`cell >> 2`): the parent-block test is
+    a cheap proxy that links a pixel only to its 3 siblings inside one 2x2 block and
+    never across a block boundary, so a spatially connected patch fragments at every
+    block edge. That proxy split single physical events in two while this plan was being
+    measured (`docs/ideas/cluster_probe.md` §3.3); this is the real query.
+
+    Validated data-free at nside=32: the relation is symmetric (0 asymmetric pairs of
+    49,140 undirected edges), has no self-loops and no duplicate entries per row, and
+    every neighbour's centre lies within 2.04x the mean pixel scale (1.83 deg) -- the
+    check that caught a wrong `N` row in an earlier transcription of the face table.
+    """
+    p = np.arange(12 * nside * nside) if p is None else np.asarray(p, dtype=np.int64)
+    ix, iy, face = _nest2xyf(nside, p)
+    out = np.empty((p.size, 8), dtype=np.int64)
+    for i in range(8):
+        x, y = ix + _NB_XOFF[i], iy + _NB_YOFF[i]
+        nb = np.full(p.shape, 4, dtype=np.int64)
+        nb = np.where(x < 0, nb - 1, np.where(x >= nside, nb + 1, nb))
+        x = np.where(x < 0, x + nside, np.where(x >= nside, x - nside, x))
+        nb = np.where(y < 0, nb - 3, np.where(y >= nside, nb + 3, nb))
+        y = np.where(y < 0, y + nside, np.where(y >= nside, y - nside, y))
+        f = _NB_FACE[nb, face]
+        bits = _NB_SWAP[nb, face >> 2]
+        xs = np.where(bits & 1, nside - x - 1, x)
+        ys = np.where(bits & 2, nside - y - 1, y)
+        xf = np.where(bits & 4, ys, xs)                      # bits & 4 -> transpose
+        yf = np.where(bits & 4, xs, ys)
+        out[:, i] = np.where(f >= 0, _xyf2nest(nside, xf, yf, np.maximum(f, 0)), -1)
+    return out
+
+
+def core_region(f, q):
+    """Highest-density region: `(tau, mask)` for the smallest cell set holding mass `q`.
+
+    `f` is a per-cell non-negative field (in `cluster_probe.py`: the cluster's occupancy
+    `f_j(cell) = P(cell carries label j)`). Sorting `f` descending and walking the
+    cumulative share until it reaches `q` gives the threshold `tau = f` at the crossing;
+    the region is `f >= tau`.
+
+    This is the fix for the fact that **no fixed occupancy threshold can be shared across
+    clusters**: peak occupancy is bimodal (77 of v6's 128 clusters peak above 0.9 while 12
+    never reach 0.5), so tau=0.5 draws a solid blob for one kind and an empty map for the
+    other. Sliding *mass coverage* instead is scale-free, and it is exactly the report's
+    `cells@50%` column generalised to arbitrary q.
+
+    `int(mask.sum())` is the drawn cell count. It can exceed the *minimal* count when
+    cells tie at `tau` (v6 c27 has 106 cells at f=1.000, all of which must be drawn),
+    which is why the count is taken as `f >= tau` rather than as the crossing index.
+    """
+    f = np.asarray(f, dtype=np.float64)
+    tot = f.sum()
+    if tot <= 0:
+        return 0.0, np.zeros(f.shape, dtype=bool)
+    order = np.argsort(f)[::-1]
+    cum = np.cumsum(f[order]) / tot
+    k = min(int(np.searchsorted(cum, q, side="left")), f.size - 1)
+    tau = float(f[order[k]])
+    return tau, f >= tau
 
 
 def build_affinity_matrix(U, means):
@@ -152,6 +288,128 @@ def _cell_lonlat(nside=NSIDE):
     rp = healpix_nest2ring(nside, pix)                       # NESTED cell ids -> RING
     lon, lat = healpix_ring_lonlat(nside, rp)
     return (lon + 180.0) % 360.0 - 180.0, lat
+
+
+cell_lonlat = _cell_lonlat        # public alias (the leading underscore predates outside use)
+
+
+def cell_xyz(nside=NSIDE):
+    """Per-cell unit vectors `[N_CELLS, 3]` under NESTED ordering.
+
+    Averaging positions on a sphere has to be done in 3-D and re-normalised; averaging
+    lon/lat directly is wrong at the dateline and meaningless at the poles. Every
+    centroid / great-circle distance in `cluster_probe.py` goes through this.
+    """
+    lon, lat = _cell_lonlat(nside)
+    rl, rb = np.radians(lon), np.radians(lat)
+    return np.stack([np.cos(rb) * np.cos(rl), np.cos(rb) * np.sin(rl), np.sin(rb)], 1)
+
+
+def render_scalar_map(fields, out_png, *, titles=None, suptitle="", cmap="viridis",
+                      vmin=None, vmax=None, mask=None, outline=None, outline_color="k",
+                      cbar_label="", ncols=None, coastlines=True, nside=NSIDE,
+                      grid_deg=1.0, smooth_sigma=0.9, bad_color="0.88", figsize=None):
+    """Continuous-field twin of `render_world_map`: one or more Mollweide panels.
+
+    `render_world_map` paints a *categorical* dominant-cluster field by interpolating its
+    RGB. This paints a *scalar* field (occupancy, an occupancy anomaly, a residual) through
+    a colormap, sharing the same griddata + Gaussian-smooth + `pcolormesh` + Natural Earth
+    coastline path so the new maps sit next to the old ones without looking foreign.
+
+      fields   [N_CELLS] array, or a list of them -> one panel each (a shared colorbar).
+      mask     [N_CELLS] bool (or a list, one per panel). Cells outside the mask are
+               painted `bad_color`; the mask is interpolated as a 0/1 field and cut at 0.5,
+               so the boundary follows the same smoothing as the data instead of showing
+               the raw 12,288-cell staircase.
+      outline  [N_CELLS] bool (or a list): drawn as a single contour line, for putting a
+               second region's outline on top of a panel (the rival's core in P1).
+      vmin/vmax  shared across panels (default: the min/max over all panels), so panels
+               are comparable -- the whole point of a ladder or a seasonal quartet.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from scipy.interpolate import griddata
+    from scipy.ndimage import gaussian_filter
+
+    def _aslist(v, n):
+        if v is None:
+            return [None] * n
+        return list(v) if isinstance(v, (list, tuple)) else [v] * n
+
+    fields = [fields] if np.ndim(fields[0]) == 0 else list(fields)
+    n = len(fields)
+    masks, outlines = _aslist(mask, n), _aslist(outline, n)
+    titles = _aslist(titles, n)
+    lon, lat = _cell_lonlat(nside)
+    glon = np.arange(-180.0, 180.0, grid_deg)
+    glat = np.arange(-90.0, 90.0 + 1e-9, grid_deg)
+    GX, GY = np.meshgrid(glon, glat)
+    gpts = np.column_stack([GX.ravel(), GY.ravel()])
+    src = np.column_stack([lon, lat])
+
+    def _interp(v):
+        """Interpolate a per-cell field onto the regular grid (linear, nearest-filled)."""
+        g = griddata(src, np.asarray(v, dtype=float), gpts, method="linear")
+        bad = np.isnan(g)
+        if bad.any():
+            g[bad] = griddata(src, np.asarray(v, dtype=float), gpts[bad], method="nearest")
+        return g.reshape(GX.shape)
+
+    vals = [np.asarray(f, dtype=float) for f in fields]
+    shown = [v if masks[i] is None else v[masks[i]] for i, v in enumerate(vals)]
+    shown = [s for s in shown if s.size]                      # an empty mask contributes nothing
+    if vmin is None:
+        vmin = float(min(s.min() for s in shown)) if shown else 0.0
+    if vmax is None:
+        vmax = float(max(s.max() for s in shown)) if shown else 1.0
+    if vmax <= vmin:
+        vmax = vmin + 1e-9
+
+    ncols = ncols or (1 if n == 1 else (2 if n <= 4 else 3))
+    nrows = int(np.ceil(n / ncols))
+    # A Mollweide panel draws a 2:1 ellipse inside its allocated box, so a row needs
+    # width/2 for the map itself plus headroom for its title; with too little, the next
+    # row's title lands in the previous row's whitespace.
+    pw = 7.0                                                  # panel width, inches
+    fig = plt.figure(figsize=figsize or (pw * ncols, (pw / 2 + 0.85) * nrows + 0.7))
+    cm = plt.get_cmap(cmap).copy()
+    cm.set_bad(bad_color)
+    coast = get_coastlines() if coastlines else []
+    mesh = None
+    for i, v in enumerate(vals):
+        ax = fig.add_subplot(nrows, ncols, i + 1, projection="mollweide")
+        G = gaussian_filter(_interp(v), sigma=smooth_sigma, mode="nearest")
+        if masks[i] is not None:
+            G = np.where(_interp(masks[i].astype(float)) >= 0.5, G, np.nan)
+        mesh = ax.pcolormesh(np.radians(GX), np.radians(GY), np.ma.masked_invalid(G),
+                             cmap=cm, vmin=vmin, vmax=vmax, shading="nearest")
+        if outlines[i] is not None and outlines[i].any():
+            ax.contour(np.radians(GX), np.radians(GY),
+                       gaussian_filter(_interp(outlines[i].astype(float)), sigma=smooth_sigma,
+                                       mode="nearest"),
+                       levels=[0.5], colors=outline_color, linewidths=0.9, linestyles="--")
+        for poly in coast:
+            ax.plot(np.radians(poly[:, 0]), np.radians(poly[:, 1]), color="0.25", lw=0.4)
+        if titles[i]:
+            ax.set_title(titles[i], fontsize=10)
+        ax.grid(alpha=0.25)
+        ax.set_xticklabels([])
+        ax.set_yticklabels([])
+    if suptitle:
+        fig.suptitle(suptitle, fontsize=12)
+    # Reserve the colorbar strip in INCHES, not as a fraction of the figure: the figure
+    # grows with the row count, so a fixed fraction leaves a 1-row plot roomy and clips the
+    # label off the bottom of a 2-row one.
+    H = fig.get_size_inches()[1]
+    fig.tight_layout(rect=(0, 0.80 / H, 1, 1))
+    cax = fig.add_axes((0.25, 0.42 / H, 0.5, 0.16 / H))
+    cb = fig.colorbar(mesh, cax=cax, orientation="horizontal")
+    if cbar_label:
+        cb.set_label(cbar_label, fontsize=9)
+    cb.ax.tick_params(labelsize=8)
+    fig.savefig(out_png, dpi=140)
+    plt.close(fig)
 
 
 def render_world_map(dominant, valid, colors, out_png, *, title="", suptitle="",
