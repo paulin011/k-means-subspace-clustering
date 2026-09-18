@@ -237,6 +237,70 @@ physical meaning; only the *transitions/groupings* carry information. The genera
   consecutive months (low = stable geography; peaks = seasonal transitions). Plus a
   **Jan↔Jul** shift (winter vs summer) and the largest owned-cell-count deltas.
 
+## Single-cluster probe (`cluster_probe.py` — `probe/shortlist.md`, `probe/c<NNN>.md`)
+
+Metrics that exist **only** in the probe. Each one earned its slot against the redundancy
+audit — the Spearman |ρ| that killed each rejected candidate is in `cluster_probe.py`'s
+docstring, and the live correlation matrix is printed in every `shortlist.md`. All are
+derived from `label_map.npy` / `residual_map.npy` / `err_persist.npy`, i.e. from the **full
+13,021-file dataset**, not from the run's 7,000-file training sample.
+
+- **`f_j(cell)`** — the cluster's **occupancy field**: the fraction of the 13,021 timesteps
+  at which that HEALPix cell carries label *j*. Every spatial number below reduces from it.
+- **`τ_q` / `core`** — the **mass-coverage threshold**. Sort `f_j` descending, cumulate,
+  and read τ off at the crossing of fraction *q*; `core` counts the cells at `f_j ≥ τ_q`.
+  This is the highest-density-region construction and it is exactly `cells@50%` generalised
+  to any *q*, so the probe's maps stay continuous with the main report's columns.
+  **Why it exists:** a raw occupancy threshold cannot be shared across clusters. Peak
+  occupancy is bimodal — 77 of v6's 128 clusters peak above 0.9 while 12 never reach 0.5
+  anywhere (c13 peaks at 0.167) — so a fixed τ=0.5 draws a solid blob for the first group
+  and an **empty map** for the second, which are precisely the clusters worth looking at.
+  Sliding coverage instead of frequency works for both.
+  **`τ50` is the territoriality scalar, not `maxf`**: v6 c122 has `maxf` 1.00 (it
+  permanently owns two cells) yet `τ50` 0.062 (its mass is smeared over 262). Reads as
+  ~1.0 = owns its territory outright ("territorial"), < 0.1 = "itinerant" (a moving state).
+- **`zres`** — mean **robust per-cell residual anomaly** of the tokens a cluster owns:
+  `z = (residual_map − median_cell) / (1.4826 · MAD_cell)`. The normalisation is not
+  optional (per-cell mean residual spans 12.4× geographically), and median/MAD rather than
+  mean/std because mean/std over-selects low-variance cells — on v6 the four crispest polar
+  clusters took 4 of the top 10 outlier-host slots under mean/std. Per-cell **rank** is
+  worse still: ranking within a cell and cutting at a global quantile selects the same
+  number of timesteps for *every* cell, so it can never say a cell is unusually anomalous.
+  Reads as: is this cluster hard **relative to where it sits** — which raw residual cannot
+  say. v6 range −0.52 … +1.57.
+- **`unmodelled`** — mean raw residual ÷ mean `err_persist` over the cluster's tokens. The
+  most orthogonal axis in the set (ρ +0.03 with raw residual on v6). Separates **anomalous
+  because unmodelled** (high; v6 c66 at 1.45 — encoded poorly despite barely moving) from
+  **anomalous because rapidly changing** (low; c111 at 0.29). v6 range 0.29 … 1.45.
+- **`events`** — count of extreme space-time events a cluster hosts. The top `--event-pct`
+  of tokens by `z` are cut and grouped into connected components; adjacency is a **real
+  HEALPix NESTED neighbour** at the same timestep, or the same cell at *t+1*. A cluster
+  hosts an event if the event's **peak-z token** carries its label. Default 0.1%: at 0.01%
+  the column separated only 27 of 128 clusters (below the distinct-value rule) because 67%
+  of components were singletons; 0.1% raises that to 84/128.
+  *The `cell >> 2` sibling proxy is not good enough here* — it links a pixel only inside its
+  own 2×2 block, fragmenting every event at block boundaries (the March 2022 Antarctic event
+  splits into 57 components under the proxy versus one 895-token component with the real
+  neighbour query).
+- **`rival_km`** — great-circle distance between a cluster's `τ50` core centroid and its
+  `runner_up`'s. Splits a case that `near%` alone conflates: rivals are usually **map blur**
+  (v6 median 2,267 km, 44% within 2,000 km, against 10,105 km / 6% for a random pair), but
+  18 of the 72 contested clusters have a rival **> 4,000 km away** — a real embedding-space
+  confusion (c26↔c40 at 16,532 km is near-antipodal; c64↔c7 at 14,838 km with seasonality
+  3.2 is a cross-hemisphere seasonal mirror).
+
+Deliberately **not** in the probe, each killed by a measurement: a **diurnal** panel (across
+all 128 v6 clusters the largest deviation of any UTC hour's share from 0.25 is 0.023, and
+only 2.6% of cells change dominant cluster between 00Z and 12Z against 42.8% between DJF and
+JJA — these latents carry a seasonal cycle and essentially no diurnal one); `maxf`
+(ρ −0.83 with `near%`); `rival_overlap`, an occupancy cosine (ρ −0.73 with `maxf`, because a
+cluster that owns its cells outright has ~zero overlap with anything by construction);
+`burstiness` (ρ 0.97 with `seasonality`); standalone per-cluster persistence (ρ 0.80 with
+residual — only the ratio survives); and per-cluster `mu_dev`/`iso`, since `iso =
+‖μⱼ−μ_global‖²/trace` peaks at just 0.25 across all 128 clusters, which makes "isolated
+cluster" a category this embedding does not contain — the outliers are at the **token**
+level, which is what `events` targets.
+
 ## Token sample / Configuration (not metrics)
 
 The report also records the run config and the **sample fingerprint** — a SHA-1 over

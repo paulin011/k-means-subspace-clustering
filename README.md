@@ -23,13 +23,17 @@ parses coastlines with stdlib `json`).
 ```
 src/              scripts, grouped by role:
   common/           cluster_io.py, worldmap.py   — shared by every other directory
-  clustering/       subspace_kmeans.py, holdout_eval.py, run_seed_sweep.sh
+  clustering/       subspace_kmeans.py, merge_clusters.py, kcenter.py, holdout_eval.py,
+                    smoke_merge_clusters.py, run_seed_sweep.sh, run_baseline_sweep.sh
   analysis/         analyze_clusters.py, temporal_spatial.py, file_signature.py,
-                    analyze_forecast_error.py   — everything that reads a finished run
-  forecast/         persistence_error.py        — per-cell error extraction (runs here)
-  supercomputer/    extract_forecast_error.py   — runs only where the WGen checkpoint lives
-docs/     METRICS.md, wgen_architecture.md, INTERPRETATION_i100.md, ideas/
-runs/     clustering/  signatures/  persistence/  forecast_error/   (all generated results)
+                    cluster_probe.py, analyze_forecast_error.py, partition_nmi.py,
+                    partition_subspace_residual.py, compare_selection_signals.py,
+                    report_figures.py           — everything that reads a finished run
+  forecast/         persistence_error.py, proxy_forecast.py  — per-cell error tracks
+  supercomputer/    extract_forecast_error.py, fe_space_check.py — need the WGen checkpoint
+docs/     METRICS.md, wgen_architecture.md, LATENT_OUTLIERS.md, ENSO_CHECK.md, ideas/
+runs/     clustering/  signatures/  persistence/  forecast_error/  proxy/  selection/
+report/   the LaTeX findings report, 2 pages + a figure/reference appendix
 logs/     run logs
 assets/   ne_110m_coastline.geojson (coastline cache)
 latents_2/            the 1.2 TB dataset (gitignored)
@@ -82,6 +86,13 @@ as the landing page, and Claude Code only auto-loads the latter from the root.
 - **`docs/METRICS.md`** — definition and interpretation of every number in `report.md`.
 - **`docs/wgen_architecture.md`** — the upstream WeatherGenerator model, for the
   forecast-error work.
+- **`docs/ENSO_CHECK.md`** — the one-off Niño 3.4 measurement backing the El Niño claim in
+  the findings report (per-winter anomaly + occupancy table, method, and the honest limits).
+- **`report/`** — the LaTeX findings report for outside readers (`report.tex`, compiled
+  `report.pdf`, figures). Two pages of body plus a third appendix page carrying the
+  seasonality and cluster-territory figures and the reference list. Build:
+  `cd report && pdflatex report.tex` (twice). Regenerate the appendix figures with
+  `python3 src/analysis/report_figures.py` first if the underlying run changes.
 
 ## Scripts
 
@@ -176,7 +187,7 @@ python3 src/clustering/subspace_kmeans.py --files-from runs/clustering/v6_subspa
 Algorithm details:
 
 - **One streaming sweep per iteration** over the sampled tokens (held in RAM as fp16),
-  split across both A100s (one worker thread per GPU). Assignment and the per-cluster
+  split across both A40s (one worker thread per GPU). Assignment and the per-cluster
   second-moment accumulation happen in the same sweep.
 - **Exact per-cluster PCA**: bases come from batched `torch.linalg.eigh` of the
   2048×2048 cluster covariances — no randomized SVD or power iterations needed,
@@ -236,6 +247,87 @@ shared contract above:
 | `sample.json` | reproducible manifest (fingerprint, seed, tokens-per-file, file-id list in load order) — feed to `--files-from` |
 
 Project a token onto its cluster subspace with `(x - means[j]) @ U[j]`.
+
+### `src/clustering/kcenter.py` — greedy k-center baseline
+
+Classic Gonzalez farthest-point k-center: start from a random token, repeatedly add the
+token farthest from all chosen centers, then one assignment pass by plain squared distance.
+Optimizes the **minimax radius** (largest distance from any token to its center), not the
+sum — and that is the point of running it: it shows what that objective does to this data.
+Centers are data points, there is no refinement loop. Everything around the algorithm is
+`cluster_io.py`: the sample (use `--files-from` for comparability) and the `model.pt`/
+`assignments.pt` schema with `d=0` and the optional `radius [K]` field (Euclidean, not
+squared). Center *selection* runs on a GPU-resident uniform subsample (`--select-tokens`,
+default 8 M ≈ 30 GiB — the full 352 GB sample cannot live on one A40); assignment, counts,
+radius and the objective are computed over the **full** sample in one streamed fp32 pass.
+`--seeds 0 1 2` amortizes the ~352 GB load across init seeds (selection is seconds each),
+writing `<out>_seed<s>/` per seed.
+
+```bash
+python3 src/clustering/kcenter.py --files-from runs/clustering/v6_subspace_big_d64/sample.json \
+    -K 128 --seeds 0 1 2 --max-ram-gb 420 --out runs/clustering/v16_kcenter
+```
+
+**Measured (v16, K=128, v2 sample):** the minimax radius is the only stable output —
+146.4/146.8/147.5 across seeds — while everything else degenerates: obj/token
+9,744–13,723 (worse than a single global centroid, which would score the total variance
+5,998), because farthest-point selection anchors nearly all centers on outliers and one
+cluster ends up with 98.8% of all tokens (sizes 196 … 84.9 M).
+
+`src/clustering/run_baseline_sweep.sh` is the detached driver that produced v13–v16:
+3× k-means (`subspace_kmeans --dim 0`, seeds 0/1/2) then k-center (3 seeds, one load),
+strictly sequential (each job holds the ~352 GB sample; 512 GB box). Log:
+`logs/baseline_sweep.log`.
+
+### `src/analysis/partition_nmi.py` — compare two partitions
+
+Normalized mutual information (arithmetic-mean norm, the convention behind the historical
+seed-band numbers) between two runs' `assignments.pt`. Note the token-level band (0.683/0.688/0.693 for v6/v7/v8, chance 2e-05) is **not** the per-cell dominant-map band (0.716/0.727/0.725, chance 0.130) — see the script docstring. Requires the runs to share
+the token sample (asserted on `file_id`/`cell_id`), is label-permutation invariant, reads
+no data, runs in seconds. `python3 src/analysis/partition_nmi.py --a <run> --b <run>`.
+
+### `src/analysis/partition_subspace_residual.py` — post-hoc subspace fit of a frozen partition
+
+The apples-to-apples number for comparing a `d=0` partition against a K-subspaces run:
+keep the run's labels frozen, fit each cluster's best d-dim affine subspace by exact PCA
+(one streamed moment pass, single GPU), and report `Σⱼ nⱼ(tr Cⱼ − Σᵢ≤d λⱼᵢ)/T` — the
+residual the partition *would* have under the richer model class, with no reassignment.
+Also prints the d=0 residual (must reproduce the run's `final_obj_per_token`; built-in
+invariant check) and the total token variance. Needs the run's full sample in RAM — do not
+overlap with another full-sample job. Writes `<dir>/posthoc_subspace.json`.
+
+**Measured (v14 k-means partition, d=64):** post-hoc residual **2,270.2**/token (37.8% of
+total variance) vs 1,877–1,892 (31.3–31.6%) for partitions optimized under the subspace
+criterion — the k-means *partition itself* is ~20% worse even when granted the same model
+class, mirroring `docs/PCA.md` §8b's 20.1% from the fixed-model direction. Invariant check
+passed at 5.9e-05 relative (the saved means lag the final relabel by one step, as expected).
+
+### `src/analysis/report_figures.py` — the findings report's appendix figures
+
+Writes the two page-3 figures of `report/report.tex` into `report/`, and prints every
+number their captions quote so the captions can be checked rather than trusted.
+
+- **`fig_territories.png`** — occupancy `f_j(cell) = P(cell carries label j)`, reduced from
+  a signature run's `label_map.npy`, for three clusters spanning the territoriality range
+  (default `--clusters 27 105 13`, the three the report's prose names). The 50%-mass core
+  (`worldmap.core_region`) goes in the panel title, not on the map as a contour: the
+  occupancy field already shows where the cluster lives. **Each panel gets its own colour scale**
+  on purpose: peak occupancy is bimodal across the run (77 of 128 clusters peak above 0.9,
+  12 never reach 0.5), so a shared scale would flatten whichever group it was not set for.
+  That is also why the panels are drawn here instead of through
+  `worldmap.render_scalar_map`, which shares `vmin`/`vmax` by design.
+- **`fig_seasonality.png`** — the DJF and JJA dominant-cluster maps side by side.
+  `temporal_spatial.py` already writes them, but as two standalone 13×6.2in figures with
+  baked-in titles, so stacking those files costs most of a page and the titles are
+  illegible once shrunk. Here they are re-rendered **title-less** through the same
+  `worldmap.render_world_map` with the same `affinity_ordered_colors` palette as the
+  report's Fig. 1, then composed into one 7in-wide figure (the report's `\textwidth`) whose
+  panel titles are set at the size they print at. `SEASONS` is redefined locally rather
+  than imported from `temporal_spatial.py`, since only `common/` is importable across role
+  directories — the same reason `partition_nmi.py` copies its `nmi()`.
+
+Verified against `temporal_spatial.py`: the seasonal token counts reproduce exactly
+(20,803,584 DJF / 21,860,352 JJA). `python3 src/analysis/report_figures.py`.
 
 ### `src/analysis/analyze_clusters.py` — Markdown report generator
 
@@ -369,6 +461,85 @@ Writes `<dir>/holdout.json`; the next `analyze_clusters.py` run renders a **Held
 generalization** section from it automatically. (v6, d=64: held-out 31.5% vs in-sample
 31.5% — the subspaces generalise.)
 
+### `src/clustering/merge_clusters.py` — over-cluster then merge (fit at large K, merge down)
+
+Fits are seeded at the K you want, which makes them prone to the local minima k-means-style
+algorithms are known for. The standard cure is to **over-parameterise** — fit more clusters
+than you need, then **merge** — and it is specifically recommended for subspace clustering
+(start with enough clusters that each is likely drawn from a single subspace, then
+agglomerate). Full plan, literature and derivations: **`docs/ideas/overcluster_merge.md`**.
+
+The criterion is **Ward's linkage with this project's own objective in place of Ward's ESS**:
+merge the pair whose union increases the total orthogonal residual least,
+
+```
+ΔR(a,b) = R_{a∪b} − R_a − R_b ≥ 0,   R_j = n_j (tr(C_j) − Σ_{i≤d} λ_ji)
+```
+
+so a merge's price is quoted in the units the run already reports, as a fraction of the
+objective. Two budgets, because they answer different questions — **measured on a K=256
+cascade, individual merges cost only 0.0002–0.0004 each while the cumulative cost reached
+1.67% over 56 merges and crossed the 0.24% seed spread after 14**:
+
+- `--max-total-cost` (**the main knob**, default `0.0024`) — cumulative objective given up.
+  The default is the measured v6/v7/v8 seed spread, i.e. *"merge until the damage equals
+  run-to-run seed noise"*.
+- `--merge-threshold` (default `0.002`) — per-merge guard against one catastrophic merge.
+  It is **not** the knob that picks K: any per-merge bound near the seed spread never fires.
+- `--target-k` — **takes precedence over both**, for an exact K (the reported cost then tells
+  you what that K cost you).
+
+`--criterion affinity`
+(principal-angle affinity) exists for comparison but is *not* the default — affinity sees
+subspace orientation only and is blind to mean placement and density (c123 maxAff 0.697 /
+near-tie 1.3% vs c122 maxAff 0.668 / near-tie 45.7%).
+
+**Scoring is exact and needs no data pass.** Second moments are additive over a merge, so
+`C = (S_a+S_b)/n − μμᵀ` is exact; `subspace_kmeans.py --save-moments` keeps the final
+sweep's `S [K,2048,2048]` (4.3 GB at K=256) that the fit already builds and normally throws
+away. The one hard term, `Σ_{i≤d} λ_i(C)`, comes from subspace iteration warm-started at
+`orth([U_a, U_b, δ])`, and `C` is never materialised — `C@V = (S_a@V + S_b@V)/n − μ(μᵀV)`
+keeps it a `bmm` at ~10 TFLOPS instead of 46.6 ms/pair of full `eigh`. Measured median error
+in `ΔR` on real tokens: 4.5% / 0.50% / 0.099% / 0.023% / **0.0016%** at 0..5 `--power-iters`
+(default 5). Without `moments.pt` it falls back to a PPCA surrogate that assumes an isotropic
+tail — **measured at ~35% error on real tokens** (the data has ~121 effective dims), fine for
+ranking pairs (Spearman 0.94) but not for a threshold in objective percent.
+
+The **full dendrogram is always computed** (down to `--min-k`) and the threshold applied
+afterwards as a *cut*, so re-tuning it is free and needs no refit; `merge_log.json` holds
+every step. `--refit-iters` (default 3) then runs real sweeps on the parent's identical token sample
+(**~352 GB RAM for a 7000-file parent — do not overlap it with the fit that produced it**), so every saved basis is an exact PCA fit
+and `counts == bincount(label)` holds. Output follows the standard `cluster_io` schema, so
+`analyze_clusters.py` / `holdout_eval.py` / `temporal_spatial.py` read a merged run unchanged
+(verified). `d=0` reduces to Ward's classic exact formula `ΔR = (n_a n_b/n)‖δ‖²`.
+
+```bash
+# fit at 256, keeping the moments
+python3 src/clustering/subspace_kmeans.py --files-from runs/clustering/v2_subspace_big/sample.json \
+    --seed 0 --clusters 256 --dim 64 --iters 25 --chunk-size 131072 --save-moments \
+    --max-ram-gb 420 --out runs/clustering/v11_k256_d64
+
+# merge down to 128 for a like-for-like comparison against v6 (--target-k beats the budgets)
+python3 src/clustering/merge_clusters.py --dir runs/clustering/v11_k256_d64 \
+    --out runs/clustering/v12_k256to128_d64 --target-k 128 --refit-iters 3
+```
+
+Cost at K=256, d=64 (measured): 32,640 initial pairs in 6.2 min at `--power-iters 2`, ~4 s
+per accepted merge; a full 256→128 cascade at the default 5 iterations is ~20–30 min — a
+one-time step against a ~5 h fit. Peak GPU 21.9 GiB of 44.4 at `--chunk-size 131072`
+(**halving the chunk is required at K=256**: the assignment kernel holds `P=[B,K,d]` plus a
+second copy inside `(P*P).sum(-1)`, which is 2×17.2 GB at the default chunk).
+
+### `src/clustering/smoke_merge_clusters.py` — smoke tests for the merge
+
+Standalone, no test framework (the repo has none). Covers: an artificially split cluster must
+be the cascade's first merge and must recover the generative partition; the merged
+mean/trace identities against brute force (1e-9); **both scoring modes against `ΔR` computed
+brute-force from the member tokens**, on synthetic *and* real tokens; schema validity and
+basis orthonormality of the merged model; and the degenerate cuts (`--target-k K` a no-op,
+threshold 0 merges nothing, cut stops at the *first* violation). Run
+`python3 src/clustering/smoke_merge_clusters.py` (add `--synthetic-only` for a data-free run).
+
 ### `src/analysis/file_signature.py` — per-file regime signature + residual (for timestamp selection)
 
 Where the other scripts study the *clusters*, this one turns a frozen clustering run into a
@@ -406,7 +577,7 @@ detection — the main goal for later fine-tuning — from *per-timestep* into
   dense. Written as `.npy` memmaps, so load with `mmap_mode="r"` and never pay 640 MB to read
   one row.
 - **Normalise before ranking.** Raw residuals are not comparable across cells — the per-cell
-  mean spans **15.7×** (273 … 4276), because a storm-track cell is intrinsically harder than a
+  mean spans **12.4×** (273 … 3386), because a storm-track cell is intrinsically harder than a
   subtropical one. `signatures.npz` therefore also carries `cell_mean_residual[12288]` and
   `cell_std_residual[12288]`, the per-cell temporal climatology:
 
@@ -609,6 +780,199 @@ Outputs (`runs/forecast_error/persist_v6/`): `summary.json`, `per_cluster.csv`, 
 storm tracks, lowest at the poles + subtropical deserts/gyres — confirming the latents encode
 meaningful atmospheric structure.
 
+### `src/analysis/cluster_probe.py` — single-cluster probe (pick a cluster, then say what it *is*)
+
+Everything else in this repo reports on **all K clusters at once**. This one goes the other
+way: pick one cluster out of 128 and produce a short key report for it. It exists because
+`merge_clusters.py` turned K into a *budget* knob (the merge cascade has no knee), so K is
+set by what can be **interpreted**, and interpretation cost is linear in K.
+
+It is a pure **reader** — no pass over `latents_2/`, no new producer. Everything comes from
+`label_map.npy` / `residual_map.npy` / `signatures.npz` (a `file_signature.py` run for the
+same model, auto-detected by matching `manifest.json["model_dir"]`), `err_persist.npy`, and
+the run's `model.pt`. The shared reductions are cached to `probe/cache.npz` keyed by the
+run's fingerprint, so the first invocation costs ~20 s and every later cluster is seconds.
+
+```bash
+# A. the shortlist — which of the 128 is worth opening at all
+python3 src/analysis/cluster_probe.py --dir runs/clustering/v6_subspace_big_d64 --rank
+
+# B. the key report for one cluster (repeat --cluster for several)
+python3 src/analysis/cluster_probe.py --dir runs/clustering/v6_subspace_big_d64 --cluster 13
+
+# a real threshold slider instead of the 3-panel ladder; --event-pct re-cuts the outlier tail
+python3 src/analysis/cluster_probe.py --dir <run> --cluster 13 --coverage 0.5,0.8,0.95 --html
+```
+
+**`--rank` → `probe/shortlist.md`.** One row per cluster over the axes neither `report.md`
+nor `temporal_report.md` has: `zres`, `unmodelled`, `events`, `τ50`/`core`, `rival_km` (all
+defined in `docs/METRICS.md`), next to `tokens` / `near%` / `seasonality` for context. It
+prints its own **metric audit** (distinct values per column, drop anything under ~40 of 128)
+and the **mutual Spearman matrix**, so a column that starts duplicating another is visible
+rather than silently shipped. Sorted by `events` (the outlier axis) by default; `--sort`
+picks another.
+
+**`--cluster N` → `probe/c<NNN>.md`.** One screen of text and two figures:
+
+- **P0 identity** — one generated sentence: size, core extent, centroid, territorial vs
+  itinerant, the diagnostics, and each one's rank in the run. Longitude uses a **circular**
+  mean and is suppressed when the concentration `R_lon` is low, since both a zonal band and
+  a ring around a pole drive it to ~0 (v6: c109 1.00, c13 0.44, c27 0.07).
+- **P1 the occupancy map with the coverage slider** (`maps/c<NNN>_coverage.png`) — the
+  centrepiece. Three Mollweide panels at 50/80/95% of the cluster's token mass, shared
+  colour scale, the rival's core outlined on top. See `τ_q` in `docs/METRICS.md` for why a
+  fixed occupancy threshold cannot work.
+- **P2 seasonal migration** (`maps/c<NNN>_seasonal.png`) — four panels of
+  `f_j(cell | season) − f_j(cell)`, the departure from the cluster's **own** annual field.
+  The raw seasonal maps mostly restate P1; the difference isolates the migration. Includes
+  the measured one-line statement that there is no diurnal counterpart.
+- **P3 extreme events hosted** — the top events by peak robust-z, as `(date range, location,
+  peak z, peak raw residual, peak cell)` rows: concrete cases to look up, not aggregates.
+  Peak raw residual sits next to peak z on purpose — a large z in a quiet cell can be a
+  small absolute anomaly, and only the pair says which.
+- **P4 its rival** — `runner_up`, `near%`, and `rival_km` with a verdict of *local blur* vs
+  *remote confusion*.
+
+Validation (§9 of `docs/ideas/cluster_probe.md`) runs on every `--rank` and prints PASS/FAIL:
+occupancy re-sums to the exact integer token count; `τ50` reproduces the main report's
+`cells@50%` for **128/128** clusters; seasonal fields re-sum to the annual field exactly;
+the HEALPix-neighbour adjacency merges the two named reference events; and un-normalising
+`zres` reproduces `model['final_obj_per_token']` to 0.02%.
+
+**The result that motivates the whole script — and its limit.** Cutting the top 0.1% of
+tokens by robust z gives components that are strongly coherent in space and time (on v6, 89%
+of flagged cells at the worst timestep have a flagged HEALPix sibling against 3% at random;
+32.4% are still flagged at the same cell one step later, against 0.010%). The largest
+**match documented extremes on the date, checked against the literature**:
+
+| probe event | tokens | peak z | peak residual | documented event |
+|---|---|---|---|---|
+| 2018-02-22 → 02-27, 87°N | 852 | 22.4 | 4,628 (99.98th pct) | Feb 2018 Arctic warming / SSW (wind reversal 12 Feb, North Pole above freezing late Feb) |
+| 2016-08-26 → 08-30, 84°N | 1,030 | 17.3 | 2,746 (88th pct) | Arctic cyclone, 970 hPa on 23 Aug 2016 (3-day lag) |
+| 2015-12-28 → 01-03, 84°N | 936 | 19.5 | 4,007 (99.80th pct) | North Pole above freezing, 30 Dec 2015 (Storm Frank) |
+| 2022-03-16 → 03-20, 75°S | 895 | 15.0 | 1,074 (**14th pct**) | March 2022 East Antarctic heatwave (record 18 Mar; Conger collapse 15 Mar) |
+
+**Read the last two columns together — that is why both are printed.** `z` asks "unusual for
+*this cell*", which is the same locally-normalised question a weather record asks, so the
+agreement above is partly built in. It is **not** a statement about magnitude in latent
+space: the March 2022 Antarctic heatwave, the largest surface temperature anomaly ever
+recorded on Earth, sits at only the **14th percentile of raw residual — below the global
+median** — because the East Antarctic plateau is so quiet in latent space (cell baseline 278
+against 1,874 globally). The two rankings disagree systematically: the top 30 events by `z`
+are 50% polar (against 14% of cells) with a median cell baseline of 744, while the top 30 by
+raw residual are **0%** polar with a baseline of 2,267 — permanently-hard SH-subtropical
+cells (Altiplano, Namib, subtropical gyres) that mark a **model-capacity gap, not an event**.
+Neither ranking is neutral; the probe reports both.
+
+The events are **not an artefact of one partition**: re-run on v12 (a genuinely different
+clustering, NMI 0.684), 5 of the top 10 land on the *identical* peak cell and 3 on the same
+day, and `file_signature.py` independently names 2018-02-24T18 as v12's most anomalous
+timestep. Two caveats stand: the strongest outlier on every scale (2019-09-30 → 10-03 off
+Tokyo, z 26.6, raw 5,299 = 99.998th pct) has **no** named storm at that position in the
+window (Mitag was on the Sea of Japan side), and the date axis is itself *reconstructed*
+(`2014-01-01 + idx×6h`) — three events landing inside their documented windows is good
+independent evidence that reconstruction is right.
+
+### `src/forecast/proxy_forecast.py` — local latent→latent PROXY forecaster (a model error, no checkpoint)
+
+`docs/ideas/latent_selection.md` concludes that fine-tuning timestamps should be selected by
+**where the model is wrong**, not by how unusual the encoder's latent is. The real answer needs
+the WeatherGenerator checkpoint, which is not on this box — and even with it the naive latent
+error is confounded (`docs/wgen_architecture.md` §5b). This script sidesteps both: it trains a
+small latent→latent forecaster on `latents_2` here, so the error is a **model** error, and it is
+trained *and* evaluated in one consistent space, so the §5b mismatch cannot arise. Justified by
+[Selection via Proxy](https://arxiv.org/abs/1906.11829) and
+[Small-to-Large Generalization](https://arxiv.org/pdf/2505.16260): selection signals from a much
+smaller model transfer to the target model.
+
+It predicts the **6 h tendency** `Δ = x_{t+1} − x_t`, so "predict zero" *is* persistence and
+skill is measured directly against `runs/persistence/v6/err_persist.npy` as a ratio of sums. The
+output head is zero-initialised, i.e. training starts at exactly persistence. Architecture: each
+cell's own token plus its 8 HEALPix NESTED neighbours (`worldmap.healpix_nest_neighbours`),
+shared 2048→`--dim` projection, a few residual MLP blocks, head back to 2048 (~11 M params,
+single GPU). Neighbours are needed because 6 h of advection at ~20 m/s is ~430 km against a
+~200 km nside=32 cell, so the tendency is not a per-cell function.
+
+```bash
+python3 src/forecast/proxy_forecast.py --out runs/proxy/v1 --steps 20000 --dim 512 --blocks 6
+python3 src/forecast/proxy_forecast.py --out runs/proxy/v1 --infer-only   # reuse model.pt
+```
+
+Data: `--chunks` contiguous blocks of `--chunk-len` files spread evenly over 2014–2022
+(sequential reads, every season represented), held as fp16 in RAM (default 20×150 = 3000 files
+≈ 151 GiB). Output `runs/proxy/<name>/{model.pt, err_proxy.npy [13020,12288] float32, meta.json}`
+— **same shape, contract and NESTED ordering as `err_persist.npy`/`err_forecast.npy`**, so the
+cluster join and `analyze_forecast_error.py` work unchanged. The script **aborts before
+inference if held-out skill ≤ 0**: a proxy that has not beaten persistence has learned nothing
+and its error field is not a usable selection signal.
+
+**Results (`runs/proxy/v1`, 42 min on one A40 including full-dataset inference).** Skill vs
+persistence **+0.5822** over all 13,020 transitions, with **no generalisation gap** — +0.5844
+inside the training chunks against **+0.5815 on the 76.8% of transitions the model never saw**.
+Per-cell skill is positive in **every one of the 12,288 cells** (min +0.104, median +0.574, max
++0.720); by zone mid-latitudes +0.618 > tropics +0.559 > polar +0.506, and
+`maps/map_proxy_skill.png` is physically coherent — predictable subtropical gyres, unpredictable
+storm tracks and Antarctic interior. **Neighbour ablation** (`--no-neighbours`,
+`runs/proxy/v1_noneigh`): +0.586 → **+0.491**. So spatial context is worth ~9.5 points, but a
+cell-only model already reaches +0.49 — meaning **the 2048-d token at one cell already encodes
+most of what is needed to predict its own 6 h evolution**. These latents are not instantaneous
+snapshots; they carry local dynamical state.
+
+### `src/supercomputer/fe_space_check.py` — is the FE's output the same space as its input?
+
+The one forward pass that decides whether `extract_forecast_error.py`'s naive error is usable.
+Reports (1) the checkpoint's actual `fe_layer_norm_after_blocks` / `ae_global_trailing_layer_norm`
+/ input-step count, (2) per-token mean/std/L2 of FE input, FE output and target, and (3) four
+candidate error definitions with their skill against persistence — `naive`, `rescaled` (one
+global scalar), `ln_both` (pattern error only), and `rollout` (`‖FE²(x_t) − FE(x_{t+1})‖²`, both
+sides in FE space by construction, but it measures trajectory divergence rather than accuracy).
+**Verdict rule:** if the FE output's per-token std is within 10% of the target's (~1.69 measured,
+see `docs/wgen_architecture.md` §5b.0), the spaces are aligned and the naive error is fine.
+
+`--synthetic` runs the whole diagnostic against a stand-in engine of the same structure, needing
+no checkpoint — it verifies the harness and demonstrates both outcomes. Verified here: with
+`--synthetic-ln` (LayerNorm at block 7 present) it reports **MISMATCH, gap ×1.698**; without it,
+**ALIGNED, gap ×0.9985**.
+
+```bash
+python3 src/supercomputer/fe_space_check.py --synthetic --synthetic-ln --n 3   # harness check
+python3 src/supercomputer/fe_space_check.py --config <cfg.yml> --run-id <id>   # the real test
+```
+
+### `src/analysis/compare_selection_signals.py` — do the selection axes rank the record differently?
+
+Puts every candidate timestamp score on one footing (`resid_frac`, `zres_mean`, `n_extreme`,
+`rare_expo`, `near_frac`, `persist`, and the proxy's `proxy_err`/`proxy_skill`) and reports the
+pairwise Spearman matrix plus the **overlap of the selected top q%** against the random baseline.
+The decisive row is `proxy_err` (a model being wrong) against the latent-geometry axes: if they
+agree, latent geometry is an adequate stand-in and the cheap axes suffice; if they disagree,
+selecting on encoder statistics selects the wrong thing.
+
+```bash
+python3 src/analysis/compare_selection_signals.py --out runs/selection/v1
+```
+
+**Result (`runs/selection/v1`) — the central question of `docs/ideas/latent_selection.md`,
+measured.** `proxy_err` against the latent-geometry axes, top-20% overlap with a 20.0% random
+baseline:
+
+| axis | ρ with `proxy_err` | top-20% overlap |
+|---|---|---|
+| `resid_frac` (**the axis currently in `weights.csv`**) | **−0.04** | **18.2%** (below baseline) |
+| `near_frac` | −0.01 | 21.4% |
+| `zres_mean` | +0.18 | 28.9% |
+| `persist` | +0.67 | 59.4% |
+
+**Latent geometry does not track model error.** The sharper target is `proxy_skill =
+1 − err/persist` (where the model fails *relative to* how much the state moved; ρ −0.08 with
+`persist`, so nearly orthogonal to raw tendency). Overlap with the hardest 20% by `proxy_skill`:
+`rare_expo` **31.1%**, `zres_mean` **28.9%**, `n_extreme` 26.0%, `persist` 11.2%, `resid_frac`
+**6.6%**, `near_frac` **4.2%**. So among checkpoint-free axes only `rare_exposure` and
+`zres_mean` positively track model difficulty — and **`residual_frac` should be dropped as a
+hardness axis**, since on this evidence it steers selection *away* from the timestamps the model
+finds hard.
+
+
 ### Chained run (fire and forget)
 
 ```bash
@@ -619,10 +983,32 @@ nohup bash -c "python3 src/clustering/subspace_kmeans.py --num-files 7000 --clus
   > $out/run.log 2>&1 &
 ```
 
+### Findings docs — outlier verification and the selection question
+
+- **`docs/LATENT_OUTLIERS.md`** — what the latent outliers actually are, verified against the
+  published record. Four of the largest events match documented extremes on the date (Feb-2018
+  Arctic SSW, 30-Dec-2015 North Pole thaw, 23-Aug-2016 Arctic cyclone, Mar-2022 East Antarctic
+  heatwave), the tail is spatiotemporally coherent (89% neighbour co-flagging vs 3% random;
+  32.4% persistence to t+1 vs 0.010%), and it reproduces across partitions. **But** the
+  Mar-2022 Antarctic heatwave — the largest surface temperature anomaly ever recorded — sits at
+  the 14th percentile of *raw* residual, so latent residual is not calibrated to physical
+  anomaly magnitude, and the z vs raw rankings are biased in opposite directions (50% vs 0%
+  polar in their top 30). Also validates the reconstructed time axis for free.
+- **`docs/ideas/latent_selection.md`** — can the subspaces drive the ~20%-timestamp selection
+  goal? Assessment against **TAROT** (Targeted Data Selection via Optimal Transport, ICML
+  2025), which is gradient-based and target-conditioned. Verdict: the subspaces are the right
+  **metric and stratification** (per-cluster MPPCA Mahalanobis is a genuine whitened distance,
+  fixing the dominant-component bias TAROT identifies) but the wrong **score**. Measured
+  blockers: the per-file `cluster_mix` space is effectively **1.8-dimensional and 96% seasonal
+  cycle**, so diversity selection in it is a calendar shuffle; per-file means dilute a 152-cell
+  event ~80×; and the three existing weight axes pick near-disjoint sets (`hard` ∩ `rare` =
+  6.7% against a 20% random baseline). The blocked forecast-error extraction is the step that
+  makes the goal defensible.
+
 ## Results so far
 
 Runs live under `runs/clustering/`, each in a `vI_<name>` directory numbered in
-chronological order (v1 → v8 below).
+chronological order (v1 → v12 below).
 
 - `v1_subspace_out/` — first full run (1500 files, K=64, d=16,
   6.7 min). Key findings: clusters are **spatially localized but temporally universal**
@@ -712,16 +1098,90 @@ chronological order (v1 → v8 below).
   102 in v8. On the spatial partition itself (label-invariant), the three runs agree with
   **normalized mutual information 0.72** between every pair (vs 0.13 for a random shuffle;
   adjusted Rand index 0.36 vs ≈0.0). **Verdict: the d=64/K=128 result is seed-stable; v6 is
-  the final configuration.** Driver: `src/clustering/run_seed_sweep.sh` (detached `setsid nohup`).
+  the final *directly-fit* configuration.** (v12 below reaches a better objective at the same
+  K=128 by merging down from K=256, but v6 remains the reference run every downstream
+  analysis — signatures, temporal report, forecast-error attribution — is built on.) Driver: `src/clustering/run_seed_sweep.sh` (detached `setsid nohup`).
 - The **temporal & spatial report** (`temporal_spatial.py` → `temporal_report.md`) breaks
   v6 down by calendar month: clusters 24/82/73/104 peak in NH summer, 7/29/67 in winter;
   month-to-month dominant-cluster flips range 6.2% (Jul→Aug) to 21.5% (Apr→May), and
   Jan↔Jul differ in 45% of cells — a clear hemispheric seasonal cycle. Maps reuse v6's
   existing assignments (no re-clustering).
+- `v11_k256_d64/` — the **over-cluster fit** for the merge experiment (same v2 sample,
+  fingerprint `82ca602ed7e7`, K=**256**, d=64, 25 iterations, `--chunk-size 131072
+  --save-moments`, 171.4 min). Final objective/token 1732.51, EVR(top-64) min/med/max
+  0.600/0.679/0.818. Its raw objective is **not** comparable to v6's — more clusters always
+  fit better — it exists only as the parent for v12. Cost scaling vs v6 measured at **1.40×**
+  per iteration (~390 s), not the 1.8× predicted from the `B·2048·K·d` FLOP ratio.
+  Ships `moments.pt` (4.0 GiB), which is what makes the merge scoring exact.
+- `v12_k256to128_d64/` — **v11 merged 256→128 with `--target-k 128 --refit-iters 3`**, the
+  controlled A/B against v6 on the identical tokens. **The over-cluster-then-merge hypothesis
+  holds:**
+
+  | run | how | `final_obj_per_token` | NMI vs v6 |
+  |---|---|---|---|
+  | v6 | direct K=128 fit | 1887.83 | — |
+  | v7 / v8 | direct fit, different seeds | 1892.30 / 1888.24 | 0.683 / 0.688 |
+  | **v12** | **K=256 fit, merged to 128, refit** | **1877.04** | **0.684** |
+
+  −0.5714% against v6, i.e. **2.4× the 0.24% seed spread** — the pre-registered bar for
+  calling it a real effect rather than a lucky init. The NMI reading is what makes the result
+  clean: at 0.684 v12 sits *inside* the seed-to-seed band, so it is not a perturbation of v6
+  but a genuinely different partition of comparable distance — and the better one. Health is
+  marginally better too: one `owned == 0` cluster (c106) against v6's two (c13, c98), no
+  cluster below ¼ mean size (min 214,343 / median 622,397 / max 1,508,278), and the cascade
+  ran 128 merges with **0 inversions**. The over-segmentation the merge is *supposed* to repair is
+  directly visible: v11 at K=256 carries **11** `owned == 0` clusters (57, 98, 135, 144, 159,
+  171, 173, 179, 212, 214, 235 — never the dominant label in any cell), and merging reduces
+  that to 1. So the step does what the construction claims mechanically, not just in aggregate.
+
+- **There is no knee in the merge-cost curve, and that is itself the finding.** Plan §5
+  (`docs/ideas/overcluster_merge.md`) hoped the cascade's cost curve would give an *empirical*
+  estimate of the natural cluster count — the first thing in this project able to answer "is
+  K=128 right?" rather than assume it. Measured on the full dendrogram, it cannot:
+
+  | K | per-merge `rel_cost` | cumulative |
+  |---|---|---|
+  | 200 | 7.30e-04 | 3.51% |
+  | 160 | 9.03e-04 | 6.78% |
+  | 128 | 1.09e-03 | 9.95% |
+  | 96 | 1.37e-03 | 13.82% |
+  | 64 | 1.81e-03 | 18.81% |
+  | 32 | 2.99e-03 | 26.17% |
+
+  Over K=256→32 the per-merge cost rises at **100.0% of steps** (median step-to-step ratio
+  1.0050, max 1.074): smooth, monotone and convex, with no interior structure. Every merge
+  costs strictly more than the one before it, starting from the first. A knee-detector run on
+  this curve returns K=5, which is a degenerate artifact of differencing a monotone convex
+  function, not a result. **Read: there is no preferred K in this range — the token manifold
+  is a continuum, so K is a budget choice, not a discoverable property.** This corroborates,
+  from a completely independent direction, what the ~33% near-tie rate and the MPPCA work
+  already said (see `docs/PCA.md` §8b and the `--soft` rationale).
+- **Calibration caveat on `--max-total-cost`.** Its 0.0024 default is anchored to the seed
+  spread, and on this production cascade that budget cuts after **4 merges, at K=252**
+  (cumulative 0.2487%). The budget is the right *quantity* — cumulative, not per-merge — but
+  the seed-spread anchor is the wrong *scale* for reducing K: going 256→128 inherently costs
+  ~10% of the objective and no part of that is ever "free". So the default answers the narrow
+  question "which clusters are redundant to within seed noise?" (answer here: essentially
+  none), and **`--target-k` is the knob for actually hitting a target K** — it takes
+  precedence over both budgets by design.
+- `v13_kmeans_d0/`, `v14_kmeans_seed1_d0/`, `v15_kmeans_seed2_d0/`, `v16_kcenter_seed{0,1,2}/`
+  — the **baseline sweep for the findings report** (2026-09-14, driver
+  `run_baseline_sweep.sh`), all on the v2/v6 sample (fingerprint `82ca602ed7e7`), K=128.
+  Plain k-means (`--dim 0`): objectives **5023.8 / 5021.1 / 5022.4** (spread 0.05%,
+  ~30× tighter than the subspace runs' 0.24%) = **83.7%** of the 5,998 total variance left
+  as residual, vs 31.5% for v6. NMI(k-means, v6) = **0.31** for both measured seeds — far
+  below the 0.68–0.72 subspace seed band, a genuinely different partition — and the k-means
+  seeds agree with *each other* only at **0.57–0.58**: a flatter objective landscape whose
+  partitions wander more. Post-hoc d=64 PCA on the frozen v14 partition still leaves
+  **2,270**/token (37.8%) vs 1,877–1,892 for subspace-optimized partitions
+  (`v14…/posthoc_subspace.json`). K-center (v16): minimax radius stable at 146.4–147.5,
+  everything else degenerate (obj 9,744–13,723, one cluster holds 98.8% of tokens) — see
+  the `kcenter.py` section. These numbers fill the method-comparison table in
+  `report/report.tex`.
 
 ## Hardware notes (this machine)
 
-- 48-core CPU, 512 GB RAM, 2× A100 40 GB, `/usr/bin/python3` + PyTorch 2.6.0 (no venv).
+- 48-core CPU, 512 GB RAM, **2× NVIDIA A40 (44.4 GiB each, sm_86)**, `/usr/bin/python3` + PyTorch 2.6.0 (no venv).
 - **GPU↔GPU peer copies are silently broken**: `tensor.to()` between `cuda:0` and
   `cuda:1` returns zeros/garbage with no error, although `can_device_access_peer`
   reports True. Route all inter-GPU transfers through CPU, and do device-to-host copies

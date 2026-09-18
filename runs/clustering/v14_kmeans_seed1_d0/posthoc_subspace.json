@@ -1,0 +1,10 @@
+{
+  "dir": "runs/clustering/v14_kmeans_seed1_d0",
+  "dim": 64,
+  "resid_per_token_d": 2270.218017578125,
+  "resid_per_token_d0": 5020.814453125,
+  "total_var_per_token": 5998.28515625,
+  "final_obj_per_token_ref": 5021.1087466297195,
+  "K": 128,
+  "tokens": 86016000
+}

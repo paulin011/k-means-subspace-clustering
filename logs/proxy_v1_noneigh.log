@@ -1,0 +1,42 @@
+neighbour table (12288, 8); 0 unresolved
+loading 3000 files -> 2980 transition pairs (141 GiB fp16)
+    loaded 200/3000
+    loaded 400/3000
+    loaded 600/3000
+    loaded 800/3000
+    loaded 1000/3000
+    loaded 1200/3000
+    loaded 1400/3000
+    loaded 1600/3000
+    loaded 1800/3000
+    loaded 2000/3000
+    loaded 2200/3000
+    loaded 2400/3000
+    loaded 2600/3000
+    loaded 2800/3000
+    loaded 3000/3000
+  loaded in 121s
+  proxy params: 8.67 M
+  step  1000/20000  train   1968.3  val   2069.7  persist   3183.1  skill +0.3498  (48s)
+  step  2000/20000  train   1868.1  val   1834.6  persist   3092.9  skill +0.4068  (92s)
+  step  3000/20000  train   1784.7  val   1785.0  persist   3142.4  skill +0.4320  (133s)
+  step  4000/20000  train   1675.4  val   1723.7  persist   3114.7  skill +0.4466  (172s)
+  step  5000/20000  train   1657.0  val   1659.2  persist   3065.1  skill +0.4587  (210s)
+  step  6000/20000  train   1733.6  val   1703.3  persist   3130.3  skill +0.4559  (246s)
+  step  7000/20000  train   1762.5  val   1680.3  persist   3102.7  skill +0.4584  (283s)
+  step  8000/20000  train   1555.2  val   1707.7  persist   3132.3  skill +0.4548  (317s)
+  step  9000/20000  train   1671.4  val   1656.5  persist   3082.6  skill +0.4626  (353s)
+  step 10000/20000  train   1626.6  val   1611.8  persist   3086.7  skill +0.4778  (389s)
+  step 11000/20000  train   1687.6  val   1660.1  persist   3151.2  skill +0.4732  (424s)
+  step 12000/20000  train   1697.8  val   1646.0  persist   3138.8  skill +0.4756  (459s)
+  step 13000/20000  train   1656.1  val   1608.3  persist   3122.2  skill +0.4849  (494s)
+  step 14000/20000  train   1546.9  val   1585.0  persist   3117.8  skill +0.4916  (530s)
+  step 15000/20000  train   1586.7  val   1586.9  persist   3090.1  skill +0.4864  (566s)
+  step 16000/20000  train   1500.4  val   1586.3  persist   3074.4  skill +0.4840  (601s)
+  step 17000/20000  train   1554.6  val   1586.4  persist   3084.5  skill +0.4857  (637s)
+  step 18000/20000  train   1669.7  val   1627.8  persist   3129.1  skill +0.4798  (672s)
+  step 19000/20000  train   1490.1  val   1594.4  persist   3138.8  skill +0.4920  (707s)
+  step 20000/20000  train   1553.4  val   1544.9  persist   3033.4  skill +0.4907  (748s)
+model saved -> runs/proxy/v1_noneigh/model.pt
+
+Done in 14.7 min. skill=+0.4907

@@ -250,7 +250,7 @@ would indicate a bug.
 **Important caveat:** this guarantees a *local* minimum, not the best possible one. Which
 one you reach depends on initialisation. That is precisely why runs v6/v7/v8 repeat the
 same configuration with seeds 0/1/2 — the objectives agree to 0.24% and the partitions
-agree at NMI 0.72 (against 0.13 for chance), which is the evidence that d=64/K=128 is a
+agree at NMI 0.72 (against 0.13 for chance) on the per-cell dominant-cluster map, and at 0.68-0.69 (against ~0) over all 86M tokens, which is the evidence that d=64/K=128 is a
 stable basin rather than a lucky start.
 
 ## 8b. Is it really optimising the subspace, or just tracking the centre?

@@ -89,6 +89,12 @@ def parse_args():
                         "measured on the full v10 run it still gives mean top-1 0.950 / "
                         "15.1%% below 0.9, more peaked than an early smoke test suggested. "
                         "Matching the ~33%% residual-margin ambiguity would need T~30-40.")
+    p.add_argument("--save-moments", action="store_true",
+                   help="also write moments.pt (per-cluster second moments S [K,2048,2048], "
+                        "msum, cnt) from the final relabel sweep, so merge_clusters.py can "
+                        "score merges against the EXACT merged covariance instead of a "
+                        "PPCA surrogate. Costs one accumulation pass on the final sweep and "
+                        "~4.3 GB on disk at K=256")
     p.add_argument("--chunk-size", type=int, default=262144, help="tokens per GPU chunk")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--gpus", type=int, default=min(2, torch.cuda.device_count()))
@@ -400,10 +406,11 @@ def main():
     # relabelling step), and record this sweep's objective as the true objective of
     # the saved model (history[-1] is the previous model's objective).
     use_soft = soft_m if "sigma2" in model else 0
-    _, obj, nll, changed = run_sweep(devices, data, labels, model, K, d, affine,
-                                     accumulate=False, chunk_size=args.chunk_size,
-                                     soft_m=use_soft, resp_idx=resp_idx, resp_w=resp_w,
-                                     soft_temp=args.soft_temp)
+    moments, obj, nll, changed = run_sweep(devices, data, labels, model, K, d, affine,
+                                           accumulate=args.save_moments,
+                                           chunk_size=args.chunk_size,
+                                           soft_m=use_soft, resp_idx=resp_idx, resp_w=resp_w,
+                                           soft_temp=args.soft_temp)
     # `counts` stays the integer bincount of the saved hard labels even under --soft, so
     # the cross-algorithm invariant counts == bincount(assignments['label']) holds for
     # every reader; the fractional masses live in `soft_counts`.
@@ -412,6 +419,17 @@ def main():
     print(f"final: obj/token={final_obj_per_token:.4f}  "
           + (f"nll/token={nll / T:.4f}  " if use_soft else "")
           + f"changed={changed / T:.4%}", flush=True)
+
+    if args.save_moments:
+        # Accumulated during the *final* sweep, so these moments belong to exactly the
+        # labels in assignments.pt -- the invariant merge_clusters.py relies on to rebuild
+        # any merged cluster's covariance exactly (S is additive over a merge).
+        S, msum, cnt = moments
+        torch.save({"S": S, "msum": msum, "cnt": cnt, "K": K, "dim": d,
+                    "sample_fingerprint": sample_fingerprint(
+                        sampled, min(args.tokens_per_file, N_CELLS), args.seed)},
+                   os.path.join(args.out, "moments.pt"))
+        print(f"Saved moments.pt ({S.numel() * 4 / 2**30:.2f} GiB)", flush=True)
 
     fp = sample_fingerprint(sampled, min(args.tokens_per_file, N_CELLS), args.seed)
     config = {**vars(args), "method": "subspace_em" if soft_m else "subspace_kmeans"}
