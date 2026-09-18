@@ -309,8 +309,9 @@ number their captions quote so the captions can be checked rather than trusted.
 
 - **`fig_territories.png`** — occupancy `f_j(cell) = P(cell carries label j)`, reduced from
   a signature run's `label_map.npy`, for three clusters spanning the territoriality range
-  (default `--clusters 27 105 13`, the three the report's prose names), each with its
-  50%-mass core (`worldmap.core_region`) outlined. **Each panel gets its own colour scale**
+  (default `--clusters 27 105 13`, the three the report's prose names). The 50%-mass core
+  (`worldmap.core_region`) goes in the panel title, not on the map as a contour: the
+  occupancy field already shows where the cluster lives. **Each panel gets its own colour scale**
   on purpose: peak occupancy is bimodal across the run (77 of 128 clusters peak above 0.9,
   12 never reach 0.5), so a shared scale would flatten whichever group it was not set for.
   That is also why the panels are drawn here instead of through

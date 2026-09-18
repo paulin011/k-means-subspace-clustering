@@ -7,8 +7,10 @@ finds them next to `report.tex`:
 1. **`fig_territories.png`** — the "clusters have territories" figure. Three
    Mollweide panels, one per cluster, painting the **occupancy field**
    `f_j(cell) = P(cell carries label j)` reduced from a signature run's
-   `label_map.npy`, with the cluster's **50%-mass core** (`worldmap.core_region`,
-   the `tau50` of `cluster_probe.py`) outlined dashed on top. Panels carry
+   `label_map.npy`. The cluster's **50%-mass core** (`worldmap.core_region`, the
+   `tau50` of `cluster_probe.py`) is reported in the panel title rather than
+   drawn as a contour: the occupancy field already shows where the cluster
+   lives, and an outline on top of it only competes with it. Panels carry
    **their own colour scale**: peak occupancy is bimodal across the run (77 of
    128 v6 clusters peak above 0.9, 12 never reach 0.5), so one shared scale
    would saturate the territorial clusters and flatten the itinerant ones into
@@ -74,7 +76,7 @@ def occupancy(label_map, clusters, n_cells):
     return occ / label_map.shape[0]
 
 
-def render_territories(fields, cores, titles, out_png):
+def render_territories(fields, titles, out_png):
     """One Mollweide panel per cluster, each on its OWN colour scale (see module docstring)."""
     import matplotlib
     matplotlib.use("Agg")
@@ -108,8 +110,6 @@ def render_territories(fields, cores, titles, out_png):
         mesh = ax.pcolormesh(np.radians(GX), np.radians(GY), np.ma.masked_invalid(G),
                              cmap=cmap, vmin=0.0, vmax=float(fields[i].max()),
                              shading="nearest")
-        ax.contour(np.radians(GX), np.radians(GY), interp(cores[i].astype(float)),
-                   levels=[0.5], colors="#0b6fd4", linewidths=1.2, linestyles="--")
         for poly in coast:
             ax.plot(np.radians(poly[:, 0]), np.radians(poly[:, 1]), color="0.45", lw=0.35)
         ax.set_title(titles[i], fontsize=10, pad=10)
@@ -201,7 +201,7 @@ def main():
               f"  core lat {lat[core].min():+.1f}..{lat[core].max():+.1f}")
 
     out_png = os.path.join(args.out, "fig_territories.png")
-    render_territories(f, cores, titles, out_png)
+    render_territories(f, titles, out_png)
     print(f"wrote {out_png}")
 
     season_png = os.path.join(args.out, "fig_seasonality.png")
