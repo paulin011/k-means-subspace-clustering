@@ -27,13 +27,13 @@ src/              scripts, grouped by role:
                     smoke_merge_clusters.py, run_seed_sweep.sh, run_baseline_sweep.sh
   analysis/         analyze_clusters.py, temporal_spatial.py, file_signature.py,
                     cluster_probe.py, analyze_forecast_error.py, partition_nmi.py,
-                    partition_subspace_residual.py, compare_selection_signals.py
-                                                — everything that reads a finished run
+                    partition_subspace_residual.py, compare_selection_signals.py,
+                    report_figures.py           — everything that reads a finished run
   forecast/         persistence_error.py, proxy_forecast.py  — per-cell error tracks
   supercomputer/    extract_forecast_error.py, fe_space_check.py — need the WGen checkpoint
 docs/     METRICS.md, wgen_architecture.md, LATENT_OUTLIERS.md, ENSO_CHECK.md, ideas/
 runs/     clustering/  signatures/  persistence/  forecast_error/  proxy/  selection/
-report/   the 2-page LaTeX findings report (report.tex → report.pdf)
+report/   the LaTeX findings report, 2 pages + a figure/reference appendix
 logs/     run logs
 assets/   ne_110m_coastline.geojson (coastline cache)
 latents_2/            the 1.2 TB dataset (gitignored)
@@ -88,8 +88,11 @@ as the landing page, and Claude Code only auto-loads the latter from the root.
   forecast-error work.
 - **`docs/ENSO_CHECK.md`** — the one-off Niño 3.4 measurement backing the El Niño claim in
   the findings report (per-winter anomaly + occupancy table, method, and the honest limits).
-- **`report/`** — the 2-page LaTeX findings report for outside readers (`report.tex`,
-  compiled `report.pdf`, figure copy). Build: `cd report && pdflatex report.tex` (twice).
+- **`report/`** — the LaTeX findings report for outside readers (`report.tex`, compiled
+  `report.pdf`, figures). Two pages of body plus a third appendix page carrying the
+  seasonality and cluster-territory figures and the reference list. Build:
+  `cd report && pdflatex report.tex` (twice). Regenerate the appendix figures with
+  `python3 src/analysis/report_figures.py` first if the underlying run changes.
 
 ## Scripts
 
@@ -279,7 +282,7 @@ strictly sequential (each job holds the ~352 GB sample; 512 GB box). Log:
 ### `src/analysis/partition_nmi.py` — compare two partitions
 
 Normalized mutual information (arithmetic-mean norm, the convention behind the historical
-0.68–0.72 seed-band numbers) between two runs' `assignments.pt`. Requires the runs to share
+seed-band numbers) between two runs' `assignments.pt`. Note the token-level band (0.683/0.688/0.693 for v6/v7/v8, chance 2e-05) is **not** the per-cell dominant-map band (0.716/0.727/0.725, chance 0.130) — see the script docstring. Requires the runs to share
 the token sample (asserted on `file_id`/`cell_id`), is label-permutation invariant, reads
 no data, runs in seconds. `python3 src/analysis/partition_nmi.py --a <run> --b <run>`.
 
@@ -298,6 +301,32 @@ total variance) vs 1,877–1,892 (31.3–31.6%) for partitions optimized under t
 criterion — the k-means *partition itself* is ~20% worse even when granted the same model
 class, mirroring `docs/PCA.md` §8b's 20.1% from the fixed-model direction. Invariant check
 passed at 5.9e-05 relative (the saved means lag the final relabel by one step, as expected).
+
+### `src/analysis/report_figures.py` — the findings report's appendix figures
+
+Writes the two page-3 figures of `report/report.tex` into `report/`, and prints every
+number their captions quote so the captions can be checked rather than trusted.
+
+- **`fig_territories.png`** — occupancy `f_j(cell) = P(cell carries label j)`, reduced from
+  a signature run's `label_map.npy`, for three clusters spanning the territoriality range
+  (default `--clusters 27 105 13`, the three the report's prose names), each with its
+  50%-mass core (`worldmap.core_region`) outlined. **Each panel gets its own colour scale**
+  on purpose: peak occupancy is bimodal across the run (77 of 128 clusters peak above 0.9,
+  12 never reach 0.5), so a shared scale would flatten whichever group it was not set for.
+  That is also why the panels are drawn here instead of through
+  `worldmap.render_scalar_map`, which shares `vmin`/`vmax` by design.
+- **`fig_seasonality.png`** — the DJF and JJA dominant-cluster maps side by side.
+  `temporal_spatial.py` already writes them, but as two standalone 13×6.2in figures with
+  baked-in titles, so stacking those files costs most of a page and the titles are
+  illegible once shrunk. Here they are re-rendered **title-less** through the same
+  `worldmap.render_world_map` with the same `affinity_ordered_colors` palette as the
+  report's Fig. 1, then composed into one 7in-wide figure (the report's `\textwidth`) whose
+  panel titles are set at the size they print at. `SEASONS` is redefined locally rather
+  than imported from `temporal_spatial.py`, since only `common/` is importable across role
+  directories — the same reason `partition_nmi.py` copies its `nmi()`.
+
+Verified against `temporal_spatial.py`: the seasonal token counts reproduce exactly
+(20,803,584 DJF / 21,860,352 JJA). `python3 src/analysis/report_figures.py`.
 
 ### `src/analysis/analyze_clusters.py` — Markdown report generator
 
@@ -547,7 +576,7 @@ detection — the main goal for later fine-tuning — from *per-timestep* into
   dense. Written as `.npy` memmaps, so load with `mmap_mode="r"` and never pay 640 MB to read
   one row.
 - **Normalise before ranking.** Raw residuals are not comparable across cells — the per-cell
-  mean spans **15.7×** (273 … 4276), because a storm-track cell is intrinsically harder than a
+  mean spans **12.4×** (273 … 3386), because a storm-track cell is intrinsically harder than a
   subtropical one. `signatures.npz` therefore also carries `cell_mean_residual[12288]` and
   `cell_std_residual[12288]`, the per-cell temporal climatology:
 

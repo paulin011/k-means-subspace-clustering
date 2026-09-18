@@ -261,7 +261,7 @@ derived from `label_map.npy` / `residual_map.npy` / `err_persist.npy`, i.e. from
   ~1.0 = owns its territory outright ("territorial"), < 0.1 = "itinerant" (a moving state).
 - **`zres`** — mean **robust per-cell residual anomaly** of the tokens a cluster owns:
   `z = (residual_map − median_cell) / (1.4826 · MAD_cell)`. The normalisation is not
-  optional (per-cell mean residual spans 15.7× geographically), and median/MAD rather than
+  optional (per-cell mean residual spans 12.4× geographically), and median/MAD rather than
   mean/std because mean/std over-selects low-variance cells — on v6 the four crispest polar
   clusters took 4 of the top 10 outlier-host slots under mean/std. Per-cell **rank** is
   worse still: ranking within a cell and cutting at a global quantile selects the same

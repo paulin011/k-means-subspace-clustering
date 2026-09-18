@@ -169,7 +169,7 @@ Per file: `mix [K]` (regime fingerprint), `mean_residual`, `residual_frac`,
 
 - **`residual_map [N, 12288]`** — per-cell residual: outlier detection at
   per-cell-per-timestep instead of per-timestep resolution. **Always normalise before
-  ranking**: per-cell mean residual spans 15.7x (273…4276), so use
+  ranking**: per-cell mean residual spans 12.4x (273…3386), so use
   `z = (R - cell_mean)/cell_std` from the climatology vectors in `signatures.npz`.
 - **`label_map [N, 12288]`** — the dynamic label map over the whole dataset
   (`assignments.pt` covers only the sampled files).
@@ -229,7 +229,7 @@ catch a regression:
 | held-out residual ~= in-sample residual | 31.5% vs 31.5% |
 
 Plus the seed sweep (v6/v7/v8): objective spread 0.24%, variance split reproducing to
-~0.5%, pairwise NMI 0.72 against 0.13 chance. That is what makes d=64 / K=128 the final
+~0.5%, pairwise NMI 0.72 against 0.13 chance *on the per-cell dominant-cluster map* (at the token level `partition_nmi.py` measures 0.68-0.69 against ~0 chance; the two are different objects, see that script's docstring). That is what makes d=64 / K=128 the final
 config rather than a lucky initialisation.
 
 ## Where it stands

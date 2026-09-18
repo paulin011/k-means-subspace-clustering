@@ -38,7 +38,7 @@ so P1 is continuous with the existing report rather than new vocabulary. `tau50`
 couple of cells) yet tau50 0.062 (its mass is smeared over 262).
 
 OUTLIERS (P3). Per-cell residuals are not comparable across cells -- the per-cell mean
-spans 15.7x geographically -- so the score is a **median/MAD robust z** against each
+spans 12.4x geographically -- so the score is a **median/MAD robust z** against each
 cell's own temporal norm, computed here in seconds from `residual_map.npy`. Median/MAD and
 not mean/std: mean/std over-selects low-variance cells (crisp polar clusters with the
 lowest persistence in the run took 4 of the top 10 host slots), and not per-cell rank
@@ -636,7 +636,7 @@ def write_shortlist(out_path, run_dir, sig_dir, persist_path, m, ev, checks, sor
         "`label_map.npy`. `z` is the **robust per-cell residual anomaly**, "
         "`z = (residual_map − median_cell) / (1.4826·MAD_cell)`, i.e. how far a token's "
         "residual sits from that cell's own temporal norm; the normalisation is not optional, "
-        "because the per-cell mean residual spans 15.7× geographically.*\n")
+        "because the per-cell mean residual spans 12.4× geographically.*\n")
     add("| column | formula / source | reads as |")
     add("|---|---|---|")
     add("| `tokens` | `label_map.npy` bincount over the full dataset | size (**not** "
@@ -937,7 +937,7 @@ def write_cluster_report(out_path, maps_dir, run_dir, sig_dir, j, m, ev, coverag
     # ---------------- P3 ----------------
     add("\n## P3 — extreme events hosted\n")
     add("*How to read this: `residual_map.npy` gives a residual per cell per timestep. Raw "
-        "residuals are not comparable across cells (the per-cell mean spans 15.7×), so each is "
+        "residuals are not comparable across cells (the per-cell mean spans 12.4×), so each is "
         "scored against its own temporal norm as "
         "`z = (residual − median_cell) / (1.4826·MAD_cell)`; the top "
         f"{EVENT_PCT}% (z ≥ {ev['thr']:.2f}) is cut and grouped into space-time connected "

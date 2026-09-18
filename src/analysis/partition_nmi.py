@@ -5,7 +5,14 @@ Both runs must share the token sample (same sample fingerprint, e.g. via
 --files-from): assignments.pt rows then align 1:1, which is asserted on
 file_id/cell_id before comparing. NMI uses the arithmetic-mean normalisation
 (same convention as analyze_forecast_error.py's static-vs-dynamic gate and the
-historical v6/v7/v8 seed-sweep numbers: seed-to-seed ~0.68-0.72, chance ~0.13).
+historical v6/v7/v8 seed-sweep numbers). **Two different objects get called
+"the seed-to-seed NMI" and they are not the same number** (re-measured
+2026-09-18): over the 86M TOKENS this script compares, v6/v7/v8 agree pairwise
+at 0.683/0.688/0.693 and an unrelated partition of the same shape scores 2e-05.
+Over the 12,288-cell DOMINANT-CLUSTER MAP they agree at 0.716/0.727/0.725 with
+a chance level of 0.130, because NMI on only 12,288 items carries a large
+finite-sample floor at K=128. Quote "0.72 vs 0.13 chance" only for the map, and
+never pair the map's 0.72 with this script's token-level number.
 Label-permutation invariant, so no cluster matching is needed. Reads only the
 two assignments.pt files -- no data pass, runs in seconds.
 

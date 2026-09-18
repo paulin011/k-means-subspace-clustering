@@ -15,7 +15,7 @@ any downstream use of latent hardness as a selection signal.
 
 `residual_map.npy [13021, 12288]` holds the orthogonal residual
 `‖x − μⱼ‖² − ‖Uⱼᵀ(x − μⱼ)‖²` of every token under its assigned cluster. Per-cell raw residuals
-are not comparable (the per-cell mean spans 15.7× geographically), so each is scored against
+are not comparable (the per-cell mean spans 12.4× geographically, 273…3386), so each is scored against
 its own temporal norm:
 
 ```

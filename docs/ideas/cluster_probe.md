@@ -111,7 +111,7 @@ Spearman |ρ| against every existing report column and against each other:
 - **`zres`** — mean robust-normalized residual of the cluster's own tokens. Not the same thing
   as the report's residual/EVR: ρ = +0.27 with raw residual, −0.15 with `maxf`, +0.14 with
   `near%`. Range −0.62 (c6) … +1.37 (c36), 119/128 distinct. Answers "is this cluster hard
-  *relative to where it sits*", which raw residual cannot, because per-cell residual spans 15.7×
+  *relative to where it sits*", which raw residual cannot, because per-cell residual spans 12.4×
   geographically.
 - **`unmodelled = residual / persistence`** — the most orthogonal axis measured (max |ρ| 0.48,
   against `persist`; ρ = **+0.03** with raw residual). This is the "anomalous because
