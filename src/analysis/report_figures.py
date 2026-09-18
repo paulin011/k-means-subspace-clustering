@@ -11,8 +11,8 @@ finds them next to `report.tex`:
    the `tau50` of `cluster_probe.py`) outlined dashed on top. Panels carry
    **their own colour scale**: peak occupancy is bimodal across the run (77 of
    128 v6 clusters peak above 0.9, 12 never reach 0.5), so one shared scale
-   would saturate the territorial clusters and flatten the itinerant ones to
-   black — the very effect the figure exists to show. This is why the panels are
+   would saturate the territorial clusters and flatten the itinerant ones into
+   the background — the very effect the figure exists to show. This is why the panels are
    rendered here rather than through `worldmap.render_scalar_map`, which shares
    `vmin/vmax` across panels by design; everything else (griddata + Gaussian
    smooth + `pcolormesh` + Natural Earth coastlines) is the same path, so the
