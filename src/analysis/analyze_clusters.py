@@ -155,8 +155,14 @@ def main():
         add("- **eigvals** (`model['eigvals'][j]`): the top-"
             f"{d} eigenvalues of cluster *j*'s within-cluster covariance — variance along "
             "each kept PC direction.")
-    add("- **trace** (`model['trace'][j]`): mean squared distance of cluster *j*'s tokens "
-        "to its centroid μⱼ — the cluster's total within-cluster variance.")
+    if method == "kcenter":
+        add("- **trace** (`model['trace'][j]`): mean squared distance of cluster *j*'s tokens "
+            "to its **center** — which for k-center is a chosen data point, not the centroid, "
+            "so this is dispersion about that anchor and exceeds the cluster's true variance "
+            "by ‖center − centroid‖².")
+    else:
+        add("- **trace** (`model['trace'][j]`): mean squared distance of cluster *j*'s tokens "
+            "to its centroid μⱼ — the cluster's total within-cluster variance.")
     add("- **counts** (`model['counts'][j]`): number of tokens in cluster *j*; "
         "**wⱼ = counts[j] / Σcounts** is its population share, used to weight every global average.")
 
@@ -234,63 +240,91 @@ def main():
             f"| {h['size_min']:,} | {h['size_max']:,} |")
 
     # ---- Global variance decomposition --------------------------------------
-    add("\n## Global variance decomposition\n")
+    # The law-of-total-variance split is only valid when `means[j]` is cluster j's
+    # CENTROID. k-center's anchors are chosen data points, so `trace` there measures
+    # dispersion about a non-centroid and `between + within` is not the sample variance
+    # (parallel-axis: E||x-c||^2 = E||x-mu||^2 + ||c-mu||^2 for any anchor c).
+    centroid_anchored = method != "kcenter"
     mu_g = (w[:, None] * means).sum(0)
     between = float((w * ((means - mu_g) ** 2).sum(1)).sum())
     within = float((w * tr).sum())
     total = between + within
     captured = float((w * eig.sum(1)).sum()) if d > 0 else 0.0
     resid = within - captured
-    add("*How to read this: the **law of total variance** lets us cut the single, "
-        "uninterpretable total spread of the tokens into perpendicular pieces that each audit "
-        "a different part of the model. Writing μ_global for the population-weighted mean of "
-        "all centroids, the **total variance** splits as:*\n")
-    add("*`E‖x − μ_global‖² = between + within`*  *(centroids vs. inside clusters), and "
-        "`within` splits again into `captured + residual` (along the subspaces vs. off them). "
-        "The pieces are perpendicular, so their squared lengths add to the whole.*\n")
-    add("- *`between = Σⱼ wⱼ ‖μⱼ − μ_global‖²` — spread of the cluster centroids "
-        "(from `means`, `counts`).*")
-    add("- *`within  = Σⱼ wⱼ · trace[j]` — average spread of tokens around their own "
-        "centroid (from `trace`, `counts`).*")
-    if d > 0:
-        add("- *`captured = Σⱼ wⱼ · Σ eigvals[j]` — the slice of `within` that the "
-            "subspaces reconstruct (from `eigvals`); `residual = within − captured` is what's "
-            "left over.*")
-    add("\n*The point of the split is to read the total as a **budget**: how much variation is "
-        "explained by **which** cluster a token is in, how much by **where it sits inside** its "
-        "cluster's subspace, and how much the model **misses**. The model's objective is to "
-        "minimise that last piece (residual).*\n")
-    add(f"Total token variance E‖x−μ_global‖² = **{total:.0f}**, split into:\n")
-    add(f"- **{between / total:.1%}** is `between / total`. It is variance explained purely "
-        f"by **which** cluster a token is in, before looking at anything inside the cluster.")
-    if d > 0:
-        add(f"- **{captured / total:.1%}** is `captured / total`. It is the chunk of `within` "
-            f"that the top-{d} subspace directions reconstruct, expressed as a fraction of the "
-            f"grand total. Note it is **not** `captured / within`; it is divided by {total:.0f}, "
-            f"the same denominator as the other two, which is what lets all three add to 100%.")
-        add(f"- **{resid / total:.1%}** is `residual / total`, the leftover within-cluster "
-            f"variance no subspace direction reaches. This is exactly what the assignment rule "
-            f"minimises.")
+    if not centroid_anchored:
+        add("\n## Dispersion about the centers\n")
+        add("*How to read this: **this is deliberately not a variance decomposition.** "
+            "The law of total variance splits `E‖x − μ_global‖²` into `between + within` "
+            "only when each `means[j]` is cluster *j*'s **centroid**. k-center never runs "
+            "an M-step — its centers are chosen **data points** (`kcenter.py`'s "
+            "`greedy_centers`), so by the parallel-axis identity "
+            "`E‖x − c‖² = E‖x − μ‖² + ‖c − μ‖²` every cluster's `trace` is inflated by the "
+            "squared offset of its center from its own centroid. `between + within` is "
+            "therefore not the sample's total variance, and shares of it would be "
+            "meaningless, so they are not printed.*\n")
+        add(f"- **Mean squared distance to the assigned center = "
+            f"`Σⱼ wⱼ·trace[j]` = {within:,.1f}** (identical to `final_obj_per_token`; "
+            f"this is the quantity a `--dim 0` k-means run minimises, so the two are "
+            f"directly comparable on the same `sample_fingerprint`).")
+        add(f"- **Spread of the centers themselves = `Σⱼ wⱼ‖cⱼ − c̄‖²` = {between:,.1f}**, "
+            f"where `c̄` is their population-weighted mean. Greedy farthest-point "
+            f"selection anchors centers on extreme tokens, so this reflects how far out "
+            f"the chosen points sit, not how separated the clusters are.")
+        add("\n*For the real total token variance, read `Total token variance` off a "
+            "centroid-based run (`subspace_kmeans.py`, any `--dim`) sharing this "
+            "`sample_fingerprint`.*")
+    if centroid_anchored:
+        add("\n## Global variance decomposition\n")
+        add("*How to read this: the **law of total variance** lets us cut the single, "
+            "uninterpretable total spread of the tokens into perpendicular pieces that each audit "
+            "a different part of the model. Writing μ_global for the population-weighted mean of "
+            "all centroids, the **total variance** splits as:*\n")
+        add("*`E‖x − μ_global‖² = between + within`*  *(centroids vs. inside clusters), and "
+            "`within` splits again into `captured + residual` (along the subspaces vs. off them). "
+            "The pieces are perpendicular, so their squared lengths add to the whole.*\n")
+        add("- *`between = Σⱼ wⱼ ‖μⱼ − μ_global‖²` — spread of the cluster centroids "
+            "(from `means`, `counts`).*")
+        add("- *`within  = Σⱼ wⱼ · trace[j]` — average spread of tokens around their own "
+            "centroid (from `trace`, `counts`).*")
+        if d > 0:
+            add("- *`captured = Σⱼ wⱼ · Σ eigvals[j]` — the slice of `within` that the "
+                "subspaces reconstruct (from `eigvals`); `residual = within − captured` is what's "
+                "left over.*")
+        add("\n*The point of the split is to read the total as a **budget**: how much variation is "
+            "explained by **which** cluster a token is in, how much by **where it sits inside** its "
+            "cluster's subspace, and how much the model **misses**. The model's objective is to "
+            "minimise that last piece (residual).*\n")
+        add(f"Total token variance E‖x−μ_global‖² = **{total:.0f}**, split into:\n")
+        add(f"- **{between / total:.1%}** is `between / total`. It is variance explained purely "
+            f"by **which** cluster a token is in, before looking at anything inside the cluster.")
+        if d > 0:
+            add(f"- **{captured / total:.1%}** is `captured / total`. It is the chunk of `within` "
+                f"that the top-{d} subspace directions reconstruct, expressed as a fraction of the "
+                f"grand total. Note it is **not** `captured / within`; it is divided by {total:.0f}, "
+                f"the same denominator as the other two, which is what lets all three add to 100%.")
+            add(f"- **{resid / total:.1%}** is `residual / total`, the leftover within-cluster "
+                f"variance no subspace direction reaches. This is exactly what the assignment rule "
+                f"minimises.")
 
-        frac = eig.cumsum(1) / eig.sum(1, keepdim=True).clamp(min=1e-12)
-        d80 = (frac < 0.8).sum(1) + 1
-        add(f"\n**Count-weighted within-cluster EVR(top-{d}): "
-            f"{float((w * evr).sum()):.3f}** — population-weighted average of the per-cluster "
-            f"EVR in the table below: of a cluster's *own* internal variance, its {d} subspace "
-            f"directions recover about {float((w * evr).sum()):.0%}. (This is `captured / "
-            f"within`; the **captured** line above was `captured / total`, hence larger here.)")
-        add(f"\n**Dimensions for 80% of within-cluster variance: "
-            f"min {int(d80.min())} / median {int(d80.median())} / max {int(d80.max())}** — the "
-            f"**d80** column below. A PC direction is one of PCA's perpendicular axes of "
-            f"variation inside a cluster (columns of `U`, most-spread first); d80 counts how "
-            f"many reach 80% of the kept total. Capped at d+1={d + 1} = a truncation warning. "
-            f"Your max is {int(d80.max())}"
-            + (f", below the cap → no cluster truncated, d={d} has headroom."
-               if int(d80.max()) <= d else
-               f", at the cap → a cluster is truncated; consider raising `--dim`."))
-    else:
-        add(f"- **{resid / total:.1%}** residual, i.e. within-cluster (point clusters: "
-            f"no subspace basis, so nothing beyond the centroid is captured)")
+            frac = eig.cumsum(1) / eig.sum(1, keepdim=True).clamp(min=1e-12)
+            d80 = (frac < 0.8).sum(1) + 1
+            add(f"\n**Count-weighted within-cluster EVR(top-{d}): "
+                f"{float((w * evr).sum()):.3f}** — population-weighted average of the per-cluster "
+                f"EVR in the table below: of a cluster's *own* internal variance, its {d} subspace "
+                f"directions recover about {float((w * evr).sum()):.0%}. (This is `captured / "
+                f"within`; the **captured** line above was `captured / total`, hence larger here.)")
+            add(f"\n**Dimensions for 80% of within-cluster variance: "
+                f"min {int(d80.min())} / median {int(d80.median())} / max {int(d80.max())}** — the "
+                f"**d80** column below. A PC direction is one of PCA's perpendicular axes of "
+                f"variation inside a cluster (columns of `U`, most-spread first); d80 counts how "
+                f"many reach 80% of the kept total. Capped at d+1={d + 1} = a truncation warning. "
+                f"Your max is {int(d80.max())}"
+                + (f", below the cap → no cluster truncated, d={d} has headroom."
+                   if int(d80.max()) <= d else
+                   f", at the cap → a cluster is truncated; consider raising `--dim`."))
+        else:
+            add(f"- **{resid / total:.1%}** residual, i.e. within-cluster (point clusters: "
+                f"no subspace basis, so nothing beyond the centroid is captured)")
 
     # ---- Held-out generalization (only if holdout_eval.py has been run) ------
     hj = os.path.join(args.dir, "holdout.json")

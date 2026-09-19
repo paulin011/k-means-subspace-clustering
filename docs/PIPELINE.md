@@ -227,6 +227,7 @@ catch a regression:
 | runner-up confusion row-sums == `cluster_tokens`, diagonal == 0 | exact |
 | `model['counts']` == `bincount(assignments['label'])` | enforced by the final relabel sweep |
 | held-out residual ~= in-sample residual | 31.5% vs 31.5% |
+| k-center: `Σⱼ wⱼ·trace[j]` == `final_obj_per_token` | enforced in `assign_pass`, 1e-8 rel (a float32 accumulator broke this by 3× in the original v16 run) |
 
 Plus the seed sweep (v6/v7/v8): objective spread 0.24%, variance split reproducing to
 ~0.5%, pairwise NMI 0.72 against 0.13 chance *on the per-cell dominant-cluster map* (at the token level `partition_nmi.py` measures 0.68-0.69 against ~0 chance; the two are different objects, see that script's docstring). That is what makes d=64 / K=128 the final

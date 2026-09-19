@@ -24,7 +24,8 @@ parses coastlines with stdlib `json`).
 src/              scripts, grouped by role:
   common/           cluster_io.py, worldmap.py   — shared by every other directory
   clustering/       subspace_kmeans.py, merge_clusters.py, kcenter.py, holdout_eval.py,
-                    smoke_merge_clusters.py, run_seed_sweep.sh, run_baseline_sweep.sh
+                    smoke_merge_clusters.py, smoke_kcenter.py, run_seed_sweep.sh,
+                    run_baseline_sweep.sh
   analysis/         analyze_clusters.py, temporal_spatial.py, file_signature.py,
                     cluster_probe.py, analyze_forecast_error.py, partition_nmi.py,
                     partition_subspace_residual.py, compare_selection_signals.py,
@@ -114,12 +115,19 @@ from different algorithms can be compared directly:
 
 **`model.pt` contract** (required regardless of algorithm): `U [K, 2048, d]` (`d=0` for
 plain point clusters — k-means/k-center have no subspace, just a centroid), `means
-[K, 2048]`, `eigvals [K, d]`, `trace [K]` (mean squared distance to centroid — what
-k-means/subspace_kmeans optimize), `counts [K]`, `explained_var_ratio [K]` (0 when
-`d=0`), `config` (must include `config["method"]` ∈ `{"kmeans", "kcenter",
+[K, 2048]`, `eigvals [K, d]`, `trace [K]` (mean squared distance to the cluster's
+anchor — what k-means/subspace_kmeans optimize), `counts [K]`, `explained_var_ratio [K]`
+(0 when `d=0`), `config` (must include `config["method"]` ∈ `{"kmeans", "kcenter",
 "subspace_kmeans"}`), per-iteration `history`, `sampled_files`, `sample_fingerprint`.
 Optional: `radius [K]` — k-center's native minimax objective (max distance from
-centroid to any member), populated only by k-center.
+the center to any member), populated only by k-center.
+
+**`means` is the anchor, not necessarily the centroid.** For `kmeans`/`subspace_kmeans`
+it is the centroid, so `(means, trace, counts)` obey the law of total variance and
+`between + within` is the sample variance. For `kcenter` it is a chosen **data point**,
+so `trace` measures dispersion about a non-centroid and is inflated by `‖c − μⱼ‖²`; any
+reader that decomposes variance must branch on `config["method"]` (`analyze_clusters.py`
+does).
 
 K-means is literally the `d=0` case of K-subspaces clustering: the orthogonal-residual
 assignment formula collapses to plain squared distance to centroid when there's no
@@ -259,25 +267,76 @@ Centers are data points, there is no refinement loop. Everything around the algo
 `assignments.pt` schema with `d=0` and the optional `radius [K]` field (Euclidean, not
 squared). Center *selection* runs on a GPU-resident uniform subsample (`--select-tokens`,
 default 8 M ≈ 30 GiB — the full 352 GB sample cannot live on one A40); assignment, counts,
-radius and the objective are computed over the **full** sample in one streamed fp32 pass.
+radius and the objective are computed over the **full** sample in one streamed pass.
 `--seeds 0 1 2` amortizes the ~352 GB load across init seeds (selection is seconds each),
-writing `<out>_seed<s>/` per seed.
+writing `<out>_seed<s>/` per seed. The two numeric kernels are `greedy_centers()` and
+`assign_pass()`, importable so `smoke_kcenter.py` can drive them at arbitrary N and D.
+
+**`means` holds the chosen center tokens, not centroids** — k-center never runs an
+M-step. By the parallel-axis identity `E‖x−c‖² = E‖x−μ‖² + ‖c−μ‖²`, every cluster's
+`trace` is therefore inflated by the squared offset of its center from its own centroid,
+and `between + within` is **not** the sample's total variance. `analyze_clusters.py`
+detects `config["method"] == "kcenter"` and prints a "Dispersion about the centers"
+section in place of the variance decomposition. This is also the whole reason k-center's
+objective lands *above* the total token variance (see Measured, below): a single centroid
+scores 5,998 by definition, and any other anchor can only add `‖c−μ‖²` on top.
+
+**Numerics (fixed 2026-09-19, the original v16 run was affected).** The per-cluster SSE
+accumulator is **float64**. In float32 it silently stagnates: 86 M tokens contributing
+~9,700 each drive one bin past ~2.7e11, where the float32 ulp exceeds the addend and every
+further add rounds to nothing. The original v16 run therefore reported `trace` ≈ **3×
+too small** (seed 1: `Σⱼ wⱼ·trace[j]` = 3,376 against a true objective of 9,744), which
+corrupted the variance-decomposition section of all three v16 reports while
+`final_obj_per_token`, `radius`, `counts` and `assignments.pt` — all computed in double or
+exactly — stayed correct. `assign_pass()` now reconciles the two independent routes to the
+objective and raises if they disagree, so the failure cannot recur silently. TF32 is also
+disabled for the assignment matmul: it costs nothing (the pass is bound by the ~352 GB
+host-to-device stream, not by 45 TFLOP of matmul) and removes a ~3e-5 bias from the
+headline objective. Center selection stays fp16 on the subsample, where the expanded
+distance form loses accuracy only when `‖x‖² ≫ ‖x−c‖²`, i.e. for strongly separated
+clusters; `latents_2` is the opposite regime (`‖x‖²` ≈ 6,046 < `d²` ≈ 9,836, measured), so
+the fp16 selection radius matches float64 to 7e-07 there.
 
 ```bash
 python3 src/clustering/kcenter.py --files-from runs/clustering/v6_subspace_big_d64/sample.json \
     -K 128 --seeds 0 1 2 --max-ram-gb 420 --out runs/clustering/v16_kcenter
 ```
 
-**Measured (v16, K=128, v2 sample):** the minimax radius is the only stable output —
-146.4/146.8/147.5 across seeds — while everything else degenerates: obj/token
-9,744–13,723 (worse than a single global centroid, which would score the total variance
-5,998), because farthest-point selection anchors nearly all centers on outliers and one
-cluster ends up with 98.8% of all tokens (sizes 196 … 84.9 M).
+**Measured (v16, K=128, v2 sample; re-run 2026-09-19 with the float64 accumulator):** the
+minimax radius is the only stable output — 146.4/146.8/147.5 across seeds — while
+everything else degenerates: obj/token **12,498.89 / 9,744.21 / 13,723.10** (worse than a
+single global centroid, which scores the total variance 5,998), because farthest-point
+selection anchors nearly all centers on outliers and one cluster ends up with 98.8% of all
+tokens (sizes 196 … 84.9 M). Every headline number reproduces the original 2026-09-14 run
+to within 5e-07 — only `trace` changed — so `report/report.tex`, which quotes the
+objective, radius and sizes, was never affected by the bug.
 
 `src/clustering/run_baseline_sweep.sh` is the detached driver that produced v13–v16:
 3× k-means (`subspace_kmeans --dim 0`, seeds 0/1/2) then k-center (3 seeds, one load),
 strictly sequential (each job holds the ~352 GB sample; 512 GB box). Log:
-`logs/baseline_sweep.log`.
+`logs/baseline_sweep.log`; the 2026-09-19 k-center re-run's log is `logs/v16_rerun.log`.
+
+### `src/clustering/smoke_kcenter.py` — smoke tests for the k-center path
+
+Standalone checks (no test framework exists in this repo), same shape as
+`smoke_merge_clusters.py`: each prints PASS/FAIL and the exit code is the failure count.
+**S1** Gonzalez on well-separated synthetic blobs — one center per blob, the generative
+partition recovered exactly, the minimax radius inside the 2-approximation bound, and the
+fp16 selection error inside the cancellation bound the blob geometry implies. **S1b** the
+same precision check in the `latents_2` regime (`‖x‖² ≈ d²`), where it must hold to 1e-3.
+**S2** the accumulator regression test: 80 M tokens piling ~4,900 each into one bin (3.9e11
+total, ~5× past the float32 stagnation point) must reconcile against a float64 brute force,
+and the test separately *demonstrates* that a float32 accumulator on the identical data
+loses 32.5% of the SSE. Reverting `ssum` to float32 makes S2 fail, verified. **S3** the
+parallel-axis identity at K=1 — the reason a data-point anchor is provably worse than the
+centroid. **S4** labels/counts/radius/trace/objective vs `torch.cdist` in float64 on real
+latent tokens. **S5** an end-to-end 3-file run validating the `cluster_io` schema
+(`U [K,2048,0]`, `counts == bincount(label)`, `final_obj_per_token == Σⱼ wⱼ·trace[j]`,
+per-seed `sample.json`). `--synthetic-only` skips S4/S5.
+
+```bash
+python3 src/clustering/smoke_kcenter.py            # 27 checks, ~4 min (needs one GPU)
+```
 
 ### `src/analysis/partition_nmi.py` — compare two partitions
 
@@ -1176,7 +1235,9 @@ chronological order (v1 → v12 below).
   **2,270**/token (37.8%) vs 1,877–1,892 for subspace-optimized partitions
   (`v14…/posthoc_subspace.json`). K-center (v16): minimax radius stable at 146.4–147.5,
   everything else degenerate (obj 9,744–13,723, one cluster holds 98.8% of tokens) — see
-  the `kcenter.py` section. These numbers fill the method-comparison table in
+  the `kcenter.py` section. **v16 was re-run 2026-09-19** after a float32 SSE accumulator
+  was found to under-report `trace` ~3× (`logs/v16_rerun.log`); objective, radius and sizes
+  reproduce to 5e-07, so only the reports' variance section changed. These numbers fill the method-comparison table in
   `report/report.tex`.
 
 ## Hardware notes (this machine)

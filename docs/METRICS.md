@@ -63,6 +63,18 @@ count-weighted average of the cluster means.
 Ideal: most variance is *between* (clean separation) plus *captured* (subspaces fit the
 within-cluster spread), with small *residual*.
 
+**The split is only valid when `means[j]` is cluster *j*'s centroid**, which holds for
+`kmeans` and `subspace_kmeans` but **not** for `kcenter`: its anchors are chosen data
+points, so by the parallel-axis identity `E‖x − c‖² = E‖x − μ‖² + ‖c − μ‖²` each `traceⱼ`
+is inflated by that squared offset and `between + within` is not the sample variance.
+`analyze_clusters.py` branches on `config["method"]` and prints a **Dispersion about the
+centers** section instead, reporting `Σⱼ wⱼ·traceⱼ` (identical to `final_obj_per_token`,
+and directly comparable to a `--dim 0` k-means run on the same fingerprint) and the spread
+of the centers themselves, with no percentages. Read the real total off a centroid-based
+run sharing the `sample_fingerprint` (5,998 for the v2 sample). This is also why k-center's
+objective lands *above* the total variance: the centroid is the unique minimiser of
+`E‖x − c‖²`, so any data-point anchor can only add to it.
+
 For `d > 0` it also reports:
 
 - **Count-weighted within-cluster EVR(top-d)** = `Σ wⱼ · evrⱼ` — average fraction of each
@@ -161,9 +173,11 @@ One row per cluster:
   is produced by `file_signature.py` (which already computes the whole `[b, K]` residual
   matrix) rather than by the report itself.
 - **radius** (k-center only, when `model.pt["radius"]` is present) — the *max* distance
-  from centroid to any member, k-center's native minimax objective. Contrast with `trace`
-  (mean squared distance, what k-means/subspace_kmeans minimize). A large radius relative
-  to trace flags an **outlier-driven cluster**.
+  from the **center** to any member, k-center's native minimax objective. Contrast with
+  `trace` (mean squared distance, what k-means/subspace_kmeans minimize). A large radius
+  relative to trace flags an **outlier-driven cluster**. Note that for k-center both are
+  measured about a chosen data point, not a centroid (see the variance-decomposition
+  caveat above).
 
 **Cluster health flags** — a one-line summary printed under the table, because in a
 128-row table a degenerate row is easy to miss and each flag is actionable:

@@ -1,6 +1,6 @@
 # Clustering report (kcenter) — `runs/clustering/v16_kcenter_seed1`
 
-*Generated 2026-09-14 16:47 by `analyze_clusters.py`. K=128 point clusters in 2048-dim token space, 86,016,000 tokens.*
+*Generated 2026-09-19 14:17 by `analyze_clusters.py`. K=128 point clusters in 2048-dim token space, 86,016,000 tokens.*
 
 ## Overview
 
@@ -9,7 +9,7 @@ The model groups the 86,016,000 sampled tokens (each a 2048-dim weather-encoder 
 The core quantities, defined once here:
 
 - **μⱼ** (`model['means'][j]`): the centroid (mean token) of cluster *j*.
-- **trace** (`model['trace'][j]`): mean squared distance of cluster *j*'s tokens to its centroid μⱼ — the cluster's total within-cluster variance.
+- **trace** (`model['trace'][j]`): mean squared distance of cluster *j*'s tokens to its **center** — which for k-center is a chosen data point, not the centroid, so this is dispersion about that anchor and exceeds the cluster's true variance by ‖center − centroid‖².
 - **counts** (`model['counts'][j]`): number of tokens in cluster *j*; **wⱼ = counts[j] / Σcounts** is its population share, used to weight every global average.
 
 ## Configuration
@@ -46,23 +46,16 @@ The core quantities, defined once here:
 
 | iter | objective/token | labels changed | min size | max size |
 |---|---|---|---|---|
-| 1 | 9744.21 | 100.00% | 196 | 84,949,015 |
+| 1 | 9744.21 | 100.00% | 196 | 84,948,951 |
 
-## Global variance decomposition
+## Dispersion about the centers
 
-*How to read this: the **law of total variance** lets us cut the single, uninterpretable total spread of the tokens into perpendicular pieces that each audit a different part of the model. Writing μ_global for the population-weighted mean of all centroids, the **total variance** splits as:*
+*How to read this: **this is deliberately not a variance decomposition.** The law of total variance splits `E‖x − μ_global‖²` into `between + within` only when each `means[j]` is cluster *j*'s **centroid**. k-center never runs an M-step — its centers are chosen **data points** (`kcenter.py`'s `greedy_centers`), so by the parallel-axis identity `E‖x − c‖² = E‖x − μ‖² + ‖c − μ‖²` every cluster's `trace` is inflated by the squared offset of its center from its own centroid. `between + within` is therefore not the sample's total variance, and shares of it would be meaningless, so they are not printed.*
 
-*`E‖x − μ_global‖² = between + within`*  *(centroids vs. inside clusters), and `within` splits again into `captured + residual` (along the subspaces vs. off them). The pieces are perpendicular, so their squared lengths add to the whole.*
+- **Mean squared distance to the assigned center = `Σⱼ wⱼ·trace[j]` = 9,744.2** (identical to `final_obj_per_token`; this is the quantity a `--dim 0` k-means run minimises, so the two are directly comparable on the same `sample_fingerprint`).
+- **Spread of the centers themselves = `Σⱼ wⱼ‖cⱼ − c̄‖²` = 247.9**, where `c̄` is their population-weighted mean. Greedy farthest-point selection anchors centers on extreme tokens, so this reflects how far out the chosen points sit, not how separated the clusters are.
 
-- *`between = Σⱼ wⱼ ‖μⱼ − μ_global‖²` — spread of the cluster centroids (from `means`, `counts`).*
-- *`within  = Σⱼ wⱼ · trace[j]` — average spread of tokens around their own centroid (from `trace`, `counts`).*
-
-*The point of the split is to read the total as a **budget**: how much variation is explained by **which** cluster a token is in, how much by **where it sits inside** its cluster's subspace, and how much the model **misses**. The model's objective is to minimise that last piece (residual).*
-
-Total token variance E‖x−μ_global‖² = **3624**, split into:
-
-- **6.8%** is `between / total`. It is variance explained purely by **which** cluster a token is in, before looking at anything inside the cluster.
-- **93.2%** residual, i.e. within-cluster (point clusters: no subspace basis, so nothing beyond the centroid is captured)
+*For the real total token variance, read `Total token variance` off a centroid-based run (`subspace_kmeans.py`, any `--dim`) sharing this `sample_fingerprint`.*
 
 ## Clusters (sorted by size)
 
@@ -79,54 +72,54 @@ Spatial columns are over the 12288 HEALPix cells with data. `share` is printed t
 
 | cluster | tokens | share | cells@50% | owned | files@50% | tCV | radius |
 |---|---|---|---|---|---|---|---|
-| 0 | 84,949,016 | 98.76% | 6085 | 12288 | 49.8% | 0.001 | 146.37 |
-| 85 | 165,703 | 0.19% | 1090 | 0 | 25.8% | 0.073 | 140.45 |
-| 44 | 75,299 | 0.09% | 447 | 0 | 16.3% | 0.106 | 137.45 |
-| 25 | 54,873 | 0.06% | 507 | 0 | 15.3% | 0.133 | 138.37 |
-| 115 | 40,787 | 0.05% | 678 | 0 | 22.5% | 0.043 | 136.73 |
-| 126 | 31,697 | 0.04% | 657 | 0 | 18.1% | 0.099 | 136.65 |
-| 121 | 31,571 | 0.04% | 283 | 0 | 17.7% | 0.085 | 141.49 |
+| 0 | 84,948,952 | 98.76% | 6085 | 12288 | 49.8% | 0.001 | 146.37 |
+| 85 | 165,711 | 0.19% | 1090 | 0 | 25.8% | 0.073 | 140.45 |
+| 44 | 75,301 | 0.09% | 447 | 0 | 16.3% | 0.106 | 137.45 |
+| 25 | 54,880 | 0.06% | 507 | 0 | 15.3% | 0.133 | 138.37 |
+| 115 | 40,791 | 0.05% | 678 | 0 | 22.5% | 0.043 | 136.73 |
+| 126 | 31,698 | 0.04% | 657 | 0 | 18.1% | 0.099 | 136.65 |
+| 121 | 31,575 | 0.04% | 283 | 0 | 17.7% | 0.085 | 141.49 |
 | 123 | 30,257 | 0.04% | 504 | 0 | 20.7% | 0.050 | 137.12 |
-| 109 | 28,070 | 0.03% | 88 | 0 | 8.2% | 0.264 | 138.86 |
-| 107 | 22,392 | 0.03% | 379 | 0 | 16.1% | 0.193 | 138.51 |
+| 109 | 28,072 | 0.03% | 88 | 0 | 8.2% | 0.264 | 138.86 |
+| 107 | 22,395 | 0.03% | 379 | 0 | 16.1% | 0.193 | 138.51 |
 | 122 | 19,810 | 0.02% | 330 | 0 | 7.9% | 0.227 | 137.49 |
-| 67 | 19,723 | 0.02% | 86 | 0 | 6.0% | 0.335 | 138.74 |
-| 112 | 18,750 | 0.02% | 203 | 0 | 7.1% | 0.160 | 139.46 |
-| 71 | 18,641 | 0.02% | 232 | 0 | 12.4% | 0.127 | 143.80 |
-| 15 | 17,695 | 0.02% | 492 | 0 | 19.4% | 0.040 | 138.03 |
+| 67 | 19,724 | 0.02% | 86 | 0 | 6.0% | 0.335 | 138.74 |
+| 112 | 18,749 | 0.02% | 203 | 0 | 7.1% | 0.160 | 139.46 |
+| 71 | 18,642 | 0.02% | 232 | 0 | 12.4% | 0.127 | 143.80 |
+| 15 | 17,699 | 0.02% | 492 | 0 | 19.4% | 0.040 | 138.03 |
 | 88 | 14,905 | 0.02% | 332 | 0 | 13.7% | 0.336 | 138.17 |
-| 118 | 13,816 | 0.02% | 35 | 0 | 6.9% | 0.319 | 139.66 |
-| 65 | 13,584 | 0.02% | 176 | 0 | 10.5% | 0.121 | 136.03 |
-| 62 | 12,647 | 0.01% | 393 | 0 | 15.2% | 0.182 | 138.76 |
-| 59 | 12,612 | 0.01% | 268 | 0 | 10.5% | 0.139 | 139.28 |
-| 79 | 12,308 | 0.01% | 73 | 0 | 8.1% | 0.217 | 143.54 |
+| 118 | 13,817 | 0.02% | 35 | 0 | 6.9% | 0.319 | 139.66 |
+| 65 | 13,585 | 0.02% | 176 | 0 | 10.5% | 0.121 | 136.03 |
+| 62 | 12,648 | 0.01% | 393 | 0 | 15.2% | 0.182 | 138.76 |
+| 59 | 12,613 | 0.01% | 269 | 0 | 10.5% | 0.139 | 139.28 |
+| 79 | 12,310 | 0.01% | 73 | 0 | 8.1% | 0.217 | 143.54 |
 | 60 | 11,802 | 0.01% | 157 | 0 | 10.6% | 0.117 | 137.00 |
 | 100 | 11,405 | 0.01% | 294 | 0 | 18.2% | 0.183 | 137.52 |
 | 55 | 11,363 | 0.01% | 532 | 0 | 14.8% | 0.095 | 137.34 |
 | 120 | 10,727 | 0.01% | 170 | 0 | 8.3% | 0.242 | 140.68 |
-| 57 | 10,681 | 0.01% | 330 | 0 | 9.7% | 0.232 | 137.46 |
+| 57 | 10,684 | 0.01% | 330 | 0 | 9.7% | 0.232 | 137.46 |
 | 98 | 10,645 | 0.01% | 6 | 0 | 6.7% | 0.132 | 135.23 |
-| 39 | 10,186 | 0.01% | 200 | 0 | 9.0% | 0.172 | 138.65 |
-| 8 | 9,801 | 0.01% | 341 | 0 | 12.5% | 0.178 | 136.83 |
+| 39 | 10,186 | 0.01% | 200 | 0 | 9.0% | 0.172 | 138.64 |
+| 8 | 9,803 | 0.01% | 341 | 0 | 12.5% | 0.178 | 136.83 |
 | 38 | 9,323 | 0.01% | 344 | 0 | 11.8% | 0.136 | 141.88 |
 | 84 | 8,811 | 0.01% | 233 | 0 | 10.3% | 0.153 | 139.67 |
 | 86 | 7,935 | 0.01% | 318 | 0 | 10.6% | 0.203 | 144.44 |
 | 70 | 7,757 | 0.01% | 113 | 0 | 13.5% | 0.090 | 137.35 |
 | 91 | 7,424 | 0.01% | 356 | 0 | 14.8% | 0.117 | 138.55 |
-| 34 | 7,385 | 0.01% | 205 | 0 | 12.3% | 0.137 | 138.19 |
-| 13 | 7,357 | 0.01% | 426 | 0 | 5.2% | 0.165 | 137.37 |
-| 43 | 7,219 | 0.01% | 205 | 0 | 7.3% | 0.273 | 138.67 |
+| 34 | 7,386 | 0.01% | 205 | 0 | 12.3% | 0.137 | 138.19 |
+| 13 | 7,358 | 0.01% | 426 | 0 | 5.2% | 0.165 | 137.37 |
+| 43 | 7,220 | 0.01% | 205 | 0 | 7.3% | 0.273 | 138.67 |
 | 3 | 6,689 | 0.01% | 376 | 0 | 8.9% | 0.188 | 136.40 |
 | 27 | 6,621 | 0.01% | 297 | 0 | 10.5% | 0.164 | 139.07 |
 | 36 | 6,265 | 0.01% | 307 | 0 | 8.3% | 0.244 | 141.06 |
-| 76 | 6,202 | 0.01% | 195 | 0 | 10.8% | 0.145 | 135.77 |
+| 76 | 6,203 | 0.01% | 195 | 0 | 10.8% | 0.145 | 135.77 |
 | 75 | 6,191 | 0.01% | 135 | 0 | 8.0% | 0.234 | 138.26 |
 | 74 | 6,014 | 0.01% | 231 | 0 | 7.2% | 0.151 | 136.37 |
 | 61 | 5,891 | 0.01% | 330 | 0 | 6.1% | 0.186 | 136.25 |
 | 127 | 5,860 | 0.01% | 190 | 0 | 10.6% | 0.172 | 140.55 |
 | 105 | 5,672 | 0.01% | 237 | 0 | 6.0% | 0.463 | 139.73 |
 | 26 | 5,365 | 0.01% | 223 | 0 | 7.5% | 0.185 | 137.95 |
-| 10 | 5,287 | 0.01% | 157 | 0 | 6.8% | 0.290 | 139.15 |
+| 10 | 5,289 | 0.01% | 157 | 0 | 6.8% | 0.289 | 139.15 |
 | 17 | 5,186 | 0.01% | 93 | 0 | 8.5% | 0.344 | 140.74 |
 | 49 | 5,099 | 0.01% | 225 | 0 | 8.4% | 0.166 | 141.54 |
 | 97 | 5,001 | 0.01% | 7 | 0 | 4.9% | 0.233 | 136.77 |
@@ -135,36 +128,36 @@ Spatial columns are over the 12288 HEALPix cells with data. `share` is printed t
 | 69 | 4,845 | 0.01% | 437 | 0 | 8.6% | 0.120 | 138.06 |
 | 94 | 4,800 | 0.01% | 193 | 0 | 7.2% | 0.234 | 140.73 |
 | 81 | 4,698 | 0.01% | 257 | 0 | 7.0% | 0.361 | 136.20 |
-| 72 | 4,463 | 0.01% | 65 | 0 | 4.5% | 0.422 | 137.46 |
+| 72 | 4,464 | 0.01% | 65 | 0 | 4.5% | 0.422 | 137.46 |
 | 23 | 4,413 | 0.01% | 277 | 0 | 11.6% | 0.166 | 136.36 |
 | 119 | 4,352 | 0.01% | 19 | 0 | 5.4% | 0.220 | 136.91 |
 | 73 | 4,144 | 0.00% | 141 | 0 | 10.7% | 0.122 | 138.92 |
-| 12 | 3,962 | 0.00% | 425 | 0 | 9.7% | 0.141 | 139.34 |
-| 99 | 3,826 | 0.00% | 127 | 0 | 4.0% | 0.380 | 136.52 |
-| 6 | 3,789 | 0.00% | 296 | 0 | 9.1% | 0.254 | 135.91 |
-| 18 | 3,763 | 0.00% | 184 | 0 | 4.2% | 0.366 | 136.46 |
+| 12 | 3,963 | 0.00% | 426 | 0 | 9.7% | 0.141 | 139.34 |
+| 99 | 3,827 | 0.00% | 127 | 0 | 4.0% | 0.380 | 136.52 |
+| 6 | 3,790 | 0.00% | 296 | 0 | 9.1% | 0.254 | 135.91 |
+| 18 | 3,764 | 0.00% | 184 | 0 | 4.2% | 0.367 | 136.46 |
 | 28 | 3,593 | 0.00% | 278 | 0 | 10.9% | 0.184 | 137.30 |
 | 7 | 3,588 | 0.00% | 213 | 0 | 10.3% | 0.217 | 139.68 |
 | 45 | 3,538 | 0.00% | 237 | 0 | 10.5% | 0.268 | 136.44 |
 | 48 | 3,502 | 0.00% | 189 | 0 | 8.4% | 0.240 | 135.54 |
-| 87 | 3,339 | 0.00% | 25 | 0 | 3.2% | 0.466 | 136.52 |
-| 80 | 3,298 | 0.00% | 307 | 0 | 9.1% | 0.120 | 138.03 |
+| 87 | 3,340 | 0.00% | 25 | 0 | 3.2% | 0.466 | 136.52 |
+| 80 | 3,298 | 0.00% | 307 | 0 | 9.1% | 0.120 | 138.02 |
 | 83 | 3,161 | 0.00% | 9 | 0 | 4.1% | 0.360 | 136.62 |
 | 41 | 3,068 | 0.00% | 208 | 0 | 5.7% | 0.149 | 140.35 |
 | 124 | 3,051 | 0.00% | 223 | 0 | 9.6% | 0.240 | 138.53 |
 | 1 | 3,038 | 0.00% | 207 | 0 | 6.2% | 0.318 | 138.69 |
 | 37 | 3,032 | 0.00% | 296 | 0 | 8.7% | 0.137 | 136.81 |
 | 104 | 3,019 | 0.00% | 75 | 0 | 4.8% | 0.502 | 139.20 |
-| 92 | 2,926 | 0.00% | 232 | 0 | 3.4% | 0.232 | 138.34 |
+| 92 | 2,927 | 0.00% | 233 | 0 | 3.5% | 0.232 | 138.34 |
 | 103 | 2,806 | 0.00% | 15 | 0 | 3.5% | 0.503 | 137.62 |
-| 54 | 2,758 | 0.00% | 244 | 0 | 8.0% | 0.097 | 138.57 |
+| 54 | 2,759 | 0.00% | 245 | 0 | 8.0% | 0.097 | 138.57 |
 | 9 | 2,748 | 0.00% | 148 | 0 | 4.8% | 0.354 | 139.38 |
 | 66 | 2,742 | 0.00% | 79 | 0 | 0.9% | 0.661 | 134.45 |
 | 52 | 2,622 | 0.00% | 240 | 0 | 10.2% | 0.169 | 137.23 |
-| 29 | 2,560 | 0.00% | 18 | 0 | 3.2% | 0.376 | 137.21 |
+| 29 | 2,561 | 0.00% | 18 | 0 | 3.2% | 0.376 | 137.21 |
 | 5 | 2,510 | 0.00% | 178 | 0 | 3.8% | 0.202 | 139.44 |
 | 125 | 2,487 | 0.00% | 86 | 0 | 3.0% | 0.204 | 139.70 |
-| 40 | 2,436 | 0.00% | 134 | 0 | 6.8% | 0.321 | 137.54 |
+| 40 | 2,435 | 0.00% | 134 | 0 | 6.8% | 0.321 | 137.54 |
 | 64 | 2,408 | 0.00% | 172 | 0 | 8.7% | 0.184 | 136.31 |
 | 19 | 2,280 | 0.00% | 143 | 0 | 5.9% | 0.452 | 137.10 |
 | 2 | 2,245 | 0.00% | 160 | 0 | 6.3% | 0.302 | 141.13 |
@@ -183,7 +176,7 @@ Spatial columns are over the 12288 HEALPix cells with data. `share` is printed t
 | 32 | 1,702 | 0.00% | 113 | 0 | 4.4% | 0.139 | 138.47 |
 | 95 | 1,561 | 0.00% | 178 | 0 | 3.7% | 0.243 | 135.55 |
 | 47 | 1,492 | 0.00% | 148 | 0 | 5.8% | 0.135 | 137.04 |
-| 30 | 1,475 | 0.00% | 91 | 0 | 3.4% | 0.333 | 140.88 |
+| 30 | 1,477 | 0.00% | 91 | 0 | 3.4% | 0.335 | 140.88 |
 | 116 | 1,446 | 0.00% | 84 | 0 | 3.2% | 0.406 | 137.60 |
 | 11 | 1,427 | 0.00% | 168 | 0 | 4.9% | 0.272 | 137.00 |
 | 102 | 1,425 | 0.00% | 86 | 0 | 3.5% | 0.232 | 136.77 |
@@ -191,7 +184,7 @@ Spatial columns are over the 12288 HEALPix cells with data. `share` is printed t
 | 117 | 1,360 | 0.00% | 135 | 0 | 6.8% | 0.274 | 136.29 |
 | 33 | 1,347 | 0.00% | 8 | 0 | 3.6% | 0.295 | 140.48 |
 | 4 | 1,304 | 0.00% | 114 | 0 | 2.5% | 0.212 | 137.68 |
-| 89 | 1,211 | 0.00% | 271 | 0 | 3.6% | 0.156 | 135.73 |
+| 89 | 1,212 | 0.00% | 271 | 0 | 3.6% | 0.157 | 135.73 |
 | 46 | 1,205 | 0.00% | 174 | 0 | 2.2% | 0.144 | 136.63 |
 | 63 | 1,106 | 0.00% | 21 | 0 | 2.2% | 0.460 | 140.94 |
 | 35 | 1,090 | 0.00% | 132 | 0 | 3.7% | 0.238 | 137.98 |
