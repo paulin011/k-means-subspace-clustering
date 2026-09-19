@@ -146,9 +146,9 @@ given the same 64-dimensional PCA fit after the fact, the residual is still
 tokens under the fitted subspace model by centre distance alone changes 57\%
 of the labels and adds 20\% residual. K-center degenerates. Greedy selection
 anchors nearly all centres on outliers. One cluster ends up with 98.8\% of
-all tokens (sizes \kcminmax) and the objective lands above the total
-variance, worse than a single global centroid. Only its minimax radius is
-stable across seeds (146 to 148).
+all tokens (sizes \kcminmax) and the objective lands above the 100\% line,
+because k-center can only place a centre on a token, never compute one.
+Only its minimax radius is stable across seeds (146 to 148).
 
 \begin{table}[t]
 \centering\small
@@ -156,8 +156,8 @@ stable across seeds (146 to 148).
 the best of 3 init seeds (the merge row is a single run). \textbf{obj/token}
 is the mean squared distance from a token to its assigned centre (subspace
 rows: to its assigned subspace). \textbf{\% of var} is obj/token divided by
-the total token variance of 5998, the share of variance left unexplained,
-lower is better. \textbf{spread} is how much worse the worst of the 3 seeds
+the total token variance of 5998, the share left unexplained, 100\% being
+no clustering. \textbf{spread} is how much worse the worst of the 3 seeds
 is than the best.}
 \label{tab:methods}
 \begin{tabular}{lrrr}
